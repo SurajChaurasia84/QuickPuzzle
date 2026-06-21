@@ -25,16 +25,16 @@ void main() async {
   SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
   ]);
-  runApp(const QuickPuzzleApp());
+  runApp(const GainPuzzleApp());
 }
 
-class QuickPuzzleApp extends StatelessWidget {
-  const QuickPuzzleApp({super.key});
+class GainPuzzleApp extends StatelessWidget {
+  const GainPuzzleApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'QuickPuzzle',
+      title: 'Gain Puzzle',
       debugShowCheckedModeBanner: false,
       theme: ThemeData.dark().copyWith(
         scaffoldBackgroundColor: const Color(0xFF0F172A),
@@ -90,8 +90,21 @@ class JigsawPieceModel {
 
 class JigsawGameScreen extends StatefulWidget {
   final String imageUrl;
+  final String? link;
+  final int? timer;
+  final String? reward;
+  final int? initialRows;
+  final int? initialCols;
 
-  const JigsawGameScreen({super.key, required this.imageUrl});
+  const JigsawGameScreen({
+    super.key,
+    required this.imageUrl,
+    this.link,
+    this.timer,
+    this.reward,
+    this.initialRows,
+    this.initialCols,
+  });
 
   @override
   State<JigsawGameScreen> createState() => _JigsawGameScreenState();
@@ -122,14 +135,121 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> {
   bool _isScrollingTray = false;
   bool _isDraggingPiece = false;
 
+  Timer? _countdownTimer;
+  int _secondsRemaining = 0;
+  bool _isGameOver = false;
+
   @override
   void initState() {
     super.initState();
+    _rows = widget.initialRows ?? 3;
+    _cols = widget.initialCols ?? 3;
+    _startTimerIfNeeded();
   }
 
   @override
   void dispose() {
+    _countdownTimer?.cancel();
     super.dispose();
+  }
+
+  void _startTimerIfNeeded() {
+    if (widget.timer != null && widget.timer! > 0) {
+      _countdownTimer?.cancel();
+      _secondsRemaining = widget.timer!;
+      _isGameOver = false;
+      _countdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+        if (_hasWon) {
+          timer.cancel();
+          return;
+        }
+        setState(() {
+          if (_secondsRemaining > 0) {
+            _secondsRemaining--;
+          } else {
+            timer.cancel();
+            _isGameOver = true;
+            _showGameOverDialog();
+          }
+        });
+      });
+    }
+  }
+
+  String _formatTime(int totalSeconds) {
+    final minutes = totalSeconds ~/ 60;
+    final seconds = totalSeconds % 60;
+    return "$minutes:${seconds.toString().padLeft(2, '0')}";
+  }
+
+  void _showGameOverDialog() {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) {
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          child: Container(
+            padding: const EdgeInsets.all(28),
+            decoration: BoxDecoration(
+              color: const Color(0xFF1E293B),
+              borderRadius: BorderRadius.circular(28),
+              border: Border.all(color: Colors.redAccent.withOpacity(0.3), width: 1.5),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.timer_off_rounded, color: Colors.redAccent, size: 56),
+                const SizedBox(height: 16),
+                const Text(
+                  "GAME OVER",
+                  style: TextStyle(
+                    fontSize: 24,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.redAccent,
+                    letterSpacing: 1.5,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  "Time limit reached! Don't give up, try again.",
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.white70),
+                ),
+                const SizedBox(height: 24),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    TextButton(
+                      onPressed: () {
+                        Navigator.of(context).pop(); // pop dialog
+                        Navigator.of(context).pop(); // return to home
+                      },
+                      child: const Text(
+                        "EXIT",
+                        style: TextStyle(color: Colors.white54, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                    ElevatedButton(
+                      onPressed: () {
+                        Navigator.of(context).pop(); // pop dialog
+                        _resetPuzzle();
+                      },
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.redAccent,
+                        foregroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      ),
+                      child: const Text("TRY AGAIN"),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
   }
 
 
@@ -263,6 +383,7 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> {
       _hasWon = false;
       _trayScrollOffset = 0.0;
       _generateAndShufflePieces();
+      _startTimerIfNeeded();
     });
   }
 
@@ -415,6 +536,35 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> {
             Navigator.of(context).pop();
           },
         ),
+
+        // Countdown Timer in Center (if enabled)
+        if (widget.timer != null && widget.timer! > 0)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+            decoration: BoxDecoration(
+              color: Colors.redAccent.withOpacity(0.15),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: Colors.redAccent.withOpacity(0.3), width: 1),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.timer_outlined, color: Colors.redAccent, size: 16),
+                const SizedBox(width: 6),
+                Text(
+                  _formatTime(_secondsRemaining),
+                  style: const TextStyle(
+                    color: Colors.redAccent,
+                    fontSize: 14,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 1.0,
+                  ),
+                ),
+              ],
+            ),
+          )
+        else
+          const Spacer(),
 
         // Action buttons
         Row(
@@ -580,7 +730,7 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> {
           top: piece.currentPosition.dy,
           child: GestureDetector(
             onPanStart: (details) {
-              if (piece.isSnapped) return;
+              if (piece.isSnapped || _isGameOver || _hasWon) return;
               _isScrollingTray = false;
               _isDraggingPiece = false;
               setState(() {
@@ -738,7 +888,52 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> {
                     color: Colors.white.withOpacity(0.7),
                   ),
                 ),
-
+                if (widget.reward != null && widget.reward!.isNotEmpty) ...[
+                  const SizedBox(height: 16),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: Colors.amberAccent.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.amberAccent.withOpacity(0.3)),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.stars, color: Colors.amberAccent, size: 20),
+                        const SizedBox(width: 8),
+                        Text(
+                          "Reward: ${widget.reward}",
+                          style: const TextStyle(
+                            color: Colors.amberAccent,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 14,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+                if (widget.link != null && widget.link!.isNotEmpty) ...[
+                  const SizedBox(height: 16),
+                  ElevatedButton.icon(
+                    onPressed: () async {
+                      final uri = Uri.parse(widget.link!);
+                      if (await canLaunchUrl(uri)) {
+                        await launchUrl(uri, mode: LaunchMode.externalApplication);
+                      }
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.amberAccent,
+                      foregroundColor: const Color(0xFF0F172A),
+                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
+                    icon: const Icon(Icons.open_in_new_rounded),
+                    label: const Text('VISIT LINK'),
+                  ),
+                ],
+                const SizedBox(height: 24),
                 ElevatedButton.icon(
                   onPressed: _resetPuzzle,
                   style: ElevatedButton.styleFrom(
@@ -1021,176 +1216,354 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
+  int _currentTabIndex = 0;
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFF0F172A),
-      body: Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            colors: [Color(0xFF0F172A), Color(0xFF1E293B)],
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
+      body: IndexedStack(
+        index: _currentTabIndex,
+        children: [
+          _buildHomeTab(context),
+          _buildWinnersTab(),
+          _buildOfferwallTab(),
+          const SettingsScreen(),
+        ],
+      ),
+      bottomNavigationBar: Container(
+        decoration: BoxDecoration(
+          border: Border(
+            top: BorderSide(
+              color: Colors.white.withOpacity(0.05),
+              width: 1,
+            ),
           ),
         ),
-        child: SafeArea(
-          child: CustomScrollView(
-            physics: const BouncingScrollPhysics(),
-            slivers: [
-              // Custom Title / Header
-              SliverToBoxAdapter(
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 32.0),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          SizedBox(
-                            width: 44,
-                            height: 44,
-                            child: ClipRRect(
-                              borderRadius: BorderRadius.circular(12),
-                              child: Image.asset(
-                                'assets/puzzle.png',
-                                fit: BoxFit.cover,
-                                errorBuilder: (context, error, stackTrace) {
-                                  return Container(
-                                    color: const Color(0xFF1E293B),
-                                    child: const Icon(
-                                      Icons.grid_view_rounded,
-                                      color: Colors.cyanAccent,
-                                    ),
-                                  );
-                                },
+        child: BottomNavigationBar(
+          currentIndex: _currentTabIndex,
+          onTap: (index) {
+            setState(() {
+              _currentTabIndex = index;
+            });
+          },
+          backgroundColor: const Color(0xFF0F172A),
+          type: BottomNavigationBarType.fixed,
+          selectedItemColor: Colors.cyanAccent,
+          unselectedItemColor: Colors.white38,
+          selectedLabelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
+          unselectedLabelStyle: const TextStyle(fontSize: 11),
+          items: const [
+            BottomNavigationBarItem(
+              icon: Icon(Icons.home_rounded),
+              label: 'Home',
+            ),
+            BottomNavigationBarItem(
+              icon: Icon(Icons.emoji_events_rounded),
+              label: 'Winners',
+            ),
+            BottomNavigationBarItem(
+              icon: Icon(Icons.local_offer_rounded),
+              label: 'Offerwall',
+            ),
+            BottomNavigationBarItem(
+              icon: Icon(Icons.settings_rounded),
+              label: 'Settings',
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildHomeTab(BuildContext context) {
+    return Container(
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          colors: [Color(0xFF0F172A), Color(0xFF1E293B)],
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+        ),
+      ),
+      child: SafeArea(
+        child: CustomScrollView(
+          physics: const BouncingScrollPhysics(),
+          slivers: [
+            // Custom Title / Header
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 32.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        SizedBox(
+                          width: 44,
+                          height: 44,
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(12),
+                            child: Image.asset(
+                              'assets/puzzle.png',
+                              fit: BoxFit.cover,
+                              errorBuilder: (context, error, stackTrace) {
+                                return Container(
+                                  color: const Color(0xFF1E293B),
+                                  child: const Icon(
+                                    Icons.grid_view_rounded,
+                                    color: Colors.cyanAccent,
+                                  ),
+                                );
+                              },
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 16),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text(
+                                "Gain Puzzle",
+                                style: TextStyle(
+                                  fontSize: 24,
+                                  fontWeight: FontWeight.w900,
+                                  color: Colors.white,
+                                  letterSpacing: 1.5,
+                                ),
                               ),
-                            ),
-                          ),
-                          const SizedBox(width: 16),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                const Text(
-                                  "QuickPuzzle",
-                                  style: TextStyle(
-                                    fontSize: 24,
-                                    fontWeight: FontWeight.w900,
-                                    color: Colors.white,
-                                    letterSpacing: 1.5,
-                                  ),
+                              const SizedBox(height: 4),
+                              Text(
+                                "Choose a puzzle image to start",
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  color: Colors.white.withOpacity(0.5),
+                                  fontWeight: FontWeight.w500,
                                 ),
-                                const SizedBox(height: 4),
-                                Text(
-                                  "Choose a puzzle image to start",
-                                  style: TextStyle(
-                                    fontSize: 13,
-                                    color: Colors.white.withOpacity(0.5),
-                                    fontWeight: FontWeight.w500,
-                                  ),
-                                ),
-                              ],
-                            ),
+                              ),
+                            ],
                           ),
-                          IconButton(
-                            icon: const Icon(
-                              Icons.settings_rounded,
-                              color: Colors.amberAccent,
-                              size: 28,
-                            ),
-                            tooltip: 'Settings',
-                            onPressed: () {
-                              Navigator.of(context).push(
-                                MaterialPageRoute(
-                                  builder: (context) => const SettingsScreen(),
-                                ),
-                              );
-                            },
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
+                        ),
+                      ],
+                    ),
+                  ],
                 ),
               ),
+            ),
 
-              // Firestore Stream Builder
-              StreamBuilder<QuerySnapshot>(
-                stream: FirebaseFirestore.instance
-                    .collection('puzzle_images')
-                    .orderBy('uploadedAt', descending: true)
-                    .snapshots(),
-                builder: (context, snapshot) {
-                  if (snapshot.hasError) {
-                    return SliverFillRemaining(
-                      hasScrollBody: false,
-                      child: Center(
-                        child: _buildErrorWidget(snapshot.error.toString()),
-                      ),
-                    );
-                  }
+            // Firestore Stream Builder
+            StreamBuilder<QuerySnapshot>(
+              stream: FirebaseFirestore.instance
+                  .collection('puzzle_images')
+                  .orderBy('uploadedAt', descending: true)
+                  .snapshots(),
+              builder: (context, snapshot) {
+                if (snapshot.hasError) {
+                  return SliverFillRemaining(
+                    hasScrollBody: false,
+                    child: Center(
+                      child: _buildErrorWidget(snapshot.error.toString()),
+                    ),
+                  );
+                }
 
-                  if (snapshot.connectionState == ConnectionState.waiting) {
-                    return const SliverFillRemaining(
-                      hasScrollBody: false,
-                      child: Center(
-                        child: CircularProgressIndicator(
-                          valueColor: AlwaysStoppedAnimation<Color>(Colors.cyanAccent),
-                        ),
-                      ),
-                    );
-                  }
-
-                  final docs = snapshot.data?.docs ?? [];
-                  if (docs.isEmpty) {
-                    return SliverFillRemaining(
-                      hasScrollBody: false,
-                      child: Center(
-                        child: _buildEmptyStateWidget(),
-                      ),
-                    );
-                  }
-
-                  return SliverPadding(
-                    padding: const EdgeInsets.symmetric(horizontal: 24.0),
-                    sliver: SliverGrid(
-                      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                        crossAxisCount: 2,
-                        crossAxisSpacing: 16,
-                        mainAxisSpacing: 16,
-                        childAspectRatio: 1.0,
-                      ),
-                      delegate: SliverChildBuilderDelegate(
-                        (context, index) {
-                          final doc = docs[index];
-                          final data = doc.data() as Map<String, dynamic>;
-                          final imageUrl = data['url'] as String? ?? '';
-                          final fileName = data['fileName'] as String? ?? 'Unnamed Puzzle';
-                          
-                          // Format Upload Date
-                          String uploadDateStr = 'Unknown Date';
-                          if (data['uploadedAt'] != null && data['uploadedAt'] is Timestamp) {
-                            final timestamp = data['uploadedAt'] as Timestamp;
-                            final date = timestamp.toDate();
-                            uploadDateStr = "${date.day}/${date.month}/${date.year}";
-                          }
-
-                          return _buildPuzzleCard(imageUrl, fileName, uploadDateStr);
-                        },
-                        childCount: docs.length,
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const SliverFillRemaining(
+                    hasScrollBody: false,
+                    child: Center(
+                      child: CircularProgressIndicator(
+                        valueColor: AlwaysStoppedAnimation<Color>(Colors.cyanAccent),
                       ),
                     ),
                   );
-                },
-              ),
-            ],
+                }
+
+                final docs = snapshot.data?.docs ?? [];
+                if (docs.isEmpty) {
+                  return SliverFillRemaining(
+                    hasScrollBody: false,
+                    child: Center(
+                      child: _buildEmptyStateWidget(),
+                    ),
+                  );
+                }
+
+                return SliverPadding(
+                  padding: const EdgeInsets.symmetric(horizontal: 24.0),
+                  sliver: SliverGrid(
+                    gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: 2,
+                      crossAxisSpacing: 16,
+                      mainAxisSpacing: 16,
+                      childAspectRatio: 1.0,
+                    ),
+                    delegate: SliverChildBuilderDelegate(
+                      (context, index) {
+                        final doc = docs[index];
+                        final data = doc.data() as Map<String, dynamic>;
+                        final imageUrl = data['url'] as String? ?? '';
+                        final fileName = data['fileName'] as String? ?? 'Unnamed Puzzle';
+                        final String? link = data['link'] as String?;
+                        final int? timer = data['timer'] as int?;
+                        final String? reward = data['reward'] as String?;
+                        final int? rows = data['rows'] as int?;
+                        final int? cols = data['cols'] as int?;
+                        
+                        // Format Upload Date
+                        String uploadDateStr = 'Unknown Date';
+                        if (data['uploadedAt'] != null && data['uploadedAt'] is Timestamp) {
+                          final timestamp = data['uploadedAt'] as Timestamp;
+                          final date = timestamp.toDate();
+                          uploadDateStr = "${date.day}/${date.month}/${date.year}";
+                        }
+
+                        return _buildPuzzleCard(
+                          imageUrl: imageUrl,
+                          fileName: fileName,
+                          uploadDateStr: uploadDateStr,
+                          link: link,
+                          timer: timer,
+                          reward: reward,
+                          rows: rows,
+                          cols: cols,
+                        );
+                      },
+                      childCount: docs.length,
+                    ),
+                  ),
+                );
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildWinnersTab() {
+    return Container(
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          colors: [Color(0xFF0F172A), Color(0xFF1E293B)],
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+        ),
+      ),
+      child: SafeArea(
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24.0),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(20),
+                  decoration: BoxDecoration(
+                    color: Colors.cyanAccent.withOpacity(0.05),
+                    shape: BoxShape.circle,
+                    border: Border.all(color: Colors.cyanAccent.withOpacity(0.15), width: 1.5),
+                  ),
+                  child: const Icon(
+                    Icons.emoji_events_rounded,
+                    color: Colors.cyanAccent,
+                    size: 48,
+                  ),
+                ),
+                const SizedBox(height: 24),
+                const Text(
+                  "Winners Leaderboard",
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.white,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  "Coming soon! The top puzzle solvers and prize winners will be listed here.",
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Colors.white.withOpacity(0.5),
+                    fontSize: 14,
+                    height: 1.5,
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),
     );
   }
 
-  Widget _buildPuzzleCard(String imageUrl, String fileName, String uploadDateStr) {
+  Widget _buildOfferwallTab() {
+    return Container(
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          colors: [Color(0xFF0F172A), Color(0xFF1E293B)],
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+        ),
+      ),
+      child: SafeArea(
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24.0),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(20),
+                  decoration: BoxDecoration(
+                    color: Colors.cyanAccent.withOpacity(0.05),
+                    shape: BoxShape.circle,
+                    border: Border.all(color: Colors.cyanAccent.withOpacity(0.15), width: 1.5),
+                  ),
+                  child: const Icon(
+                    Icons.local_offer_rounded,
+                    color: Colors.cyanAccent,
+                    size: 48,
+                  ),
+                ),
+                const SizedBox(height: 24),
+                const Text(
+                  "Offerwall Tasks",
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.white,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  "Coming soon! Complete custom offers and tasks to win special rewards.",
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Colors.white.withOpacity(0.5),
+                    fontSize: 14,
+                    height: 1.5,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPuzzleCard({
+    required String imageUrl,
+    required String fileName,
+    required String uploadDateStr,
+    String? link,
+    int? timer,
+    String? reward,
+    int? rows,
+    int? cols,
+  }) {
     return Container(
       decoration: BoxDecoration(
         color: const Color(0xFF1E293B),
@@ -1206,7 +1579,14 @@ class _HomeScreenState extends State<HomeScreen> {
       child: ClipRRect(
         borderRadius: BorderRadius.circular(20),
         child: InkWell(
-          onTap: () => _navigateToGame(imageUrl),
+          onTap: () => _navigateToGame(
+            imageUrl: imageUrl,
+            link: link,
+            timer: timer,
+            reward: reward,
+            initialRows: rows,
+            initialCols: cols,
+          ),
           child: Hero(
             tag: imageUrl,
             child: CachedNetworkImage(
@@ -1337,10 +1717,24 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  void _navigateToGame(String imageUrl) {
+  void _navigateToGame({
+    required String imageUrl,
+    String? link,
+    int? timer,
+    String? reward,
+    int? initialRows,
+    int? initialCols,
+  }) {
     Navigator.of(context).push(
       PageRouteBuilder(
-        pageBuilder: (context, animation, secondaryAnimation) => JigsawGameScreen(imageUrl: imageUrl),
+        pageBuilder: (context, animation, secondaryAnimation) => JigsawGameScreen(
+          imageUrl: imageUrl,
+          link: link,
+          timer: timer,
+          reward: reward,
+          initialRows: initialRows,
+          initialCols: initialCols,
+        ),
         transitionsBuilder: (context, animation, secondaryAnimation, child) {
           return FadeTransition(
             opacity: animation,
@@ -1576,10 +1970,6 @@ class SettingsScreen extends StatelessWidget {
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back_ios_new_rounded, color: Colors.cyanAccent),
-          onPressed: () => Navigator.of(context).pop(),
-        ),
         title: const Text(
           'SETTINGS',
           style: TextStyle(
@@ -1635,7 +2025,7 @@ class SettingsScreen extends StatelessWidget {
                       scheme: 'mailto',
                       path: 'puzzle0798@gmail.com',
                       queryParameters: {
-                        'subject': 'QuickPuzzle Help & Support',
+                        'subject': 'Gain Puzzle Help & Support',
                       },
                     );
                     if (await canLaunchUrl(emailUri)) {
@@ -1657,12 +2047,12 @@ class SettingsScreen extends StatelessWidget {
                   title: 'Share App',
                   icon: Icons.share_rounded,
                   onTap: () {
-                    Share.share('Check out QuickPuzzle, the ultimate custom jigsaw puzzle game app! Download and start solving puzzles: https://play.google.com/store/apps/details?id=com.quick.puzzleapp');
+                    Share.share('Check out Gain Puzzle, the ultimate custom jigsaw puzzle game app! Download and start solving puzzles: https://play.google.com/store/apps/details?id=com.quick.puzzleapp');
                   },
                 ),
                 const Spacer(),
                 Text(
-                  'QuickPuzzle v1.0.0',
+                  'Gain Puzzle v1.0.0',
                   textAlign: TextAlign.center,
                   style: TextStyle(
                     fontSize: 12,
