@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -12,6 +14,13 @@ void main() async {
   } catch (e) {
     debugPrint('Firebase initialization failed: $e');
   }
+  SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
+    statusBarColor: Colors.transparent,
+    statusBarIconBrightness: Brightness.light,
+    statusBarBrightness: Brightness.dark,
+    systemNavigationBarColor: Color(0xFF0F172A),
+    systemNavigationBarIconBrightness: Brightness.light,
+  ));
   SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
   ]);
@@ -93,9 +102,6 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> {
   int _cols = 3;
 
   // Game stats
-  int _moves = 0;
-  int _secondsElapsed = 0;
-  Timer? _timer;
   bool _showHint = false;
   bool _hasWon = false;
 
@@ -107,10 +113,13 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> {
   double _boardTop = 0.0;
   double _trayTop = 0.0;
   double _trayHeight = 0.0;
+  double _trayScrollOffset = 0.0;
 
   // Active pieces
   List<JigsawPieceModel> _pieces = [];
   int? _activeDraggingIndex;
+  bool _isScrollingTray = false;
+  bool _isDraggingPiece = false;
 
   @override
   void initState() {
@@ -119,22 +128,10 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> {
 
   @override
   void dispose() {
-    _timer?.cancel();
     super.dispose();
   }
 
-  // Starts/resets the game timer
-  void _startTimer() {
-    _timer?.cancel();
-    _secondsElapsed = 0;
-    _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (mounted && !_hasWon) {
-        setState(() {
-          _secondsElapsed++;
-        });
-      }
-    });
-  }
+
 
   // Generates jigsaw pieces with complementary fitting edges
   void _generateAndShufflePieces() {
@@ -177,45 +174,55 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> {
     _organizeTrayPieces();
   }
 
-  // Arranges all unsnapped pieces in neat grid slots inside the bottom tray
+  // Arranges all unsnapped pieces in a horizontally scrolling line inside the bottom tray (fixed 75x75 slots)
   void _organizeTrayPieces() {
-    final trayWidth = _screenWidth - 32.0;
-    final trayLeft = 16.0;
-
-    final unsnapped = _pieces.where((p) => !p.isSnapped).toList();
-    final count = unsnapped.length;
+    final count = _pieces.length;
     if (count == 0) return;
 
-    // Determine grid columns inside tray based on total pieces
-    int cols = 4;
-    if (count > 4) cols = 5;
-    if (count > 10) cols = 6;
+    // Fixed drawer size (same for all difficulties)
+    const drawerPw = 75.0;
+    const drawerPh = 75.0;
 
-    int rows = (count / cols).ceil();
-    double slotWidth = trayWidth / cols;
-    double slotHeight = _trayHeight / math.max(rows, 1);
+    final trayLeft = 48.0; // leave space for left padding
+    final trayWidth = _screenWidth - 96.0;
 
-    final w = _boardSize / _cols;
-    final h = _boardSize / _rows;
-    final pw = w * 1.4;
-    final ph = h * 1.4;
-
-    // Shuffle slot assignments so they aren't arranged in visual order
-    final indices = List<int>.generate(count, (i) => i)..shuffle();
+    // Clamp scroll offset to valid bounds based on total slots (all pieces)
+    final totalWidth = count * (drawerPw + 16.0);
+    final maxScroll = math.max(0.0, totalWidth - trayWidth);
+    _trayScrollOffset = _trayScrollOffset.clamp(0.0, maxScroll);
 
     setState(() {
       for (int i = 0; i < count; i++) {
-        final idx = indices[i];
-        final piece = unsnapped[idx];
+        final piece = _pieces[i];
+        if (piece.isSnapped) continue;
+        
+        // If this piece is currently being dragged up/out, don't override its position!
+        if (_isDraggingPiece && _activeDraggingIndex != null && _activeDraggingIndex! < _pieces.length && _pieces[_activeDraggingIndex!] == piece) {
+          continue;
+        }
 
-        final gridRow = i ~/ cols;
-        final gridCol = i % cols;
-
-        final posX = trayLeft + gridCol * slotWidth + (slotWidth - pw) / 2;
-        final posY = _trayTop + gridRow * slotHeight + (slotHeight - ph) / 2;
+        final posX = trayLeft + i * (drawerPw + 16.0) - _trayScrollOffset;
+        final posY = _trayTop + (_trayHeight - drawerPh) / 2;
 
         piece.currentPosition = Offset(posX, posY);
       }
+    });
+  }
+
+  void _scrollTray(double delta) {
+    final count = _pieces.length;
+    if (count == 0) return;
+
+    // Fixed drawer size
+    const drawerPw = 75.0;
+
+    final trayWidth = _screenWidth - 96.0;
+    final totalWidth = count * (drawerPw + 16.0);
+    final maxScroll = math.max(0.0, totalWidth - trayWidth);
+
+    setState(() {
+      _trayScrollOffset = (_trayScrollOffset + delta).clamp(0.0, maxScroll);
+      _organizeTrayPieces();
     });
   }
 
@@ -231,7 +238,6 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> {
     final dist = (piece.currentPosition - Offset(targetLeft, targetTop)).distance;
 
     setState(() {
-      _moves++;
       // Snap tolerance of 22 pixels
       if (dist < 22.0) {
         piece.currentPosition = Offset(targetLeft, targetTop);
@@ -241,8 +247,10 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> {
         // Check victory
         if (_pieces.every((p) => p.isSnapped)) {
           _hasWon = true;
-          _timer?.cancel();
         }
+      } else {
+        // Return to its tray slot position
+        _organizeTrayPieces();
       }
       _activeDraggingIndex = null;
     });
@@ -252,9 +260,8 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> {
   void _resetPuzzle() {
     setState(() {
       _hasWon = false;
+      _trayScrollOffset = 0.0;
       _generateAndShufflePieces();
-      _startTimer();
-      _moves = 0;
     });
   }
 
@@ -267,12 +274,7 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> {
     });
   }
 
-  // Formats the elapsed seconds into mm:ss format
-  String _formatTime(int totalSeconds) {
-    final m = (totalSeconds ~/ 60).toString().padLeft(2, '0');
-    final s = (totalSeconds % 60).toString().padLeft(2, '0');
-    return '$m:$s';
-  }
+
 
   @override
   Widget build(BuildContext context) {
@@ -293,7 +295,7 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> {
 
               // Top HUD and Bottom Tray space allocation
               final availableHeight = _screenHeight - 120.0 - 150.0;
-              _boardSize = math.min(_screenWidth * 0.85, math.min(availableHeight, 320.0));
+              _boardSize = math.min(_screenWidth * 0.92, math.min(availableHeight, 380.0));
               _boardLeft = (_screenWidth - _boardSize) / 2;
               _boardTop = 100.0 + (availableHeight - _boardSize) / 2;
 
@@ -305,7 +307,6 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> {
                 WidgetsBinding.instance.addPostFrameCallback((_) {
                   if (mounted && _pieces.isEmpty) {
                     _generateAndShufflePieces();
-                    _startTimer();
                   }
                 });
               }
@@ -328,14 +329,26 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> {
                     child: _buildGameBoard(),
                   ),
 
+                  // 2.5 Difficulty Selector Below the HUD (App Bar)
+                  Positioned(
+                    top: 68,
+                    left: 0,
+                    right: 0,
+                    child: Center(
+                      child: _buildDifficultySelector(),
+                    ),
+                  ),
+
                   // 3. Bottom Tray visual card
                   Positioned(
-                    left: 16,
+                    left: 0,
                     top: _trayTop - 8,
-                    right: 16,
+                    right: 0,
                     height: _trayHeight + 16,
                     child: _buildTrayBackground(),
                   ),
+
+
 
                   // 4. Render snapped pieces first (bottom of stack)
                   ..._buildPuzzlePieces(snappedOnly: true),
@@ -354,104 +367,77 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> {
     );
   }
 
+  Widget _buildDifficultySelector() {
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      physics: const BouncingScrollPhysics(),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _buildDiffButton('2x2', 2),
+            const SizedBox(width: 6),
+            _buildDiffButton('3x3', 3),
+            const SizedBox(width: 6),
+            _buildDiffButton('4x4', 4),
+            const SizedBox(width: 6),
+            _buildDiffButton('5x5', 5),
+            const SizedBox(width: 6),
+            _buildDiffButton('6x6', 6),
+            const SizedBox(width: 6),
+            _buildDiffButton('7x7', 7),
+            const SizedBox(width: 6),
+            _buildDiffButton('8x8', 8),
+          ],
+        ),
+      ),
+    );
+  }
+
   // Renders the transparent HUD control and status card
   Widget _buildHeaderHUD() {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.03),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.white.withOpacity(0.08)),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.15),
-            blurRadius: 10,
-            offset: const Offset(0, 4),
-          )
-        ],
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          // Back Button + Time & Moves
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              IconButton(
-                padding: EdgeInsets.zero,
-                constraints: const BoxConstraints(),
-                icon: const Icon(
-                  Icons.arrow_back_ios_new_rounded,
-                  color: Colors.cyanAccent,
-                  size: 20,
-                ),
-                tooltip: 'Back to Menu',
-                onPressed: () {
-                  Navigator.of(context).pop();
-                },
-              ),
-              const SizedBox(width: 12),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'TIME: ${_formatTime(_secondsElapsed)}',
-                    style: const TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.bold,
-                      letterSpacing: 1.0,
-                      color: Colors.cyanAccent,
-                    ),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    'MOVES: $_moves',
-                    style: TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w500,
-                      color: Colors.white.withOpacity(0.6),
-                    ),
-                  ),
-                ],
-              ),
-            ],
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        // Back Button
+        IconButton(
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(),
+          icon: const Icon(
+            Icons.arrow_back_ios_new_rounded,
+            color: Colors.cyanAccent,
+            size: 20,
           ),
+          tooltip: 'Back to Menu',
+          onPressed: () {
+            Navigator.of(context).pop();
+          },
+        ),
 
-          // Difficulty Selector Button Group
-          Row(
-            children: [
-              _buildDiffButton('2x2', 2),
-              const SizedBox(width: 4),
-              _buildDiffButton('3x3', 3),
-              const SizedBox(width: 4),
-              _buildDiffButton('4x4', 4),
-            ],
-          ),
-
-          // Action buttons
-          Row(
-            children: [
-              IconButton(
-                icon: Icon(
-                  _showHint ? Icons.visibility : Icons.visibility_off,
-                  color: _showHint ? Colors.amberAccent : Colors.white70,
-                ),
-                tooltip: 'Toggle Hint Image',
-                onPressed: () {
-                  setState(() {
-                    _showHint = !_showHint;
-                  });
-                },
+        // Action buttons
+        Row(
+          children: [
+            IconButton(
+              icon: Icon(
+                _showHint ? Icons.visibility : Icons.visibility_off,
+                color: _showHint ? Colors.amberAccent : Colors.white70,
               ),
-              IconButton(
-                icon: const Icon(Icons.refresh, color: Colors.cyanAccent),
-                tooltip: 'Reset Puzzle',
-                onPressed: _resetPuzzle,
-              ),
-            ],
-          )
-        ],
-      ),
+              tooltip: 'Toggle Hint Image',
+              onPressed: () {
+                setState(() {
+                  _showHint = !_showHint;
+                });
+              },
+            ),
+            IconButton(
+              icon: const Icon(Icons.refresh, color: Colors.cyanAccent),
+              tooltip: 'Reset Puzzle',
+              onPressed: _resetPuzzle,
+            ),
+          ],
+        )
+      ],
     );
   }
 
@@ -492,7 +478,7 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> {
         height: _boardSize,
         decoration: BoxDecoration(
           color: const Color(0xFF020617).withOpacity(0.5),
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.zero,
           border: Border.all(color: Colors.white.withOpacity(0.05), width: 1),
           boxShadow: [
             BoxShadow(
@@ -507,7 +493,7 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> {
           // Background Hint Image (Toggleable)
           if (_showHint)
             ClipRRect(
-              borderRadius: BorderRadius.circular(11),
+              borderRadius: BorderRadius.zero,
               child: Opacity(
                 opacity: 0.20,
                 child: Image.network(
@@ -540,73 +526,53 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> {
     );
   }
 
-  // Background visual container for the bottom tray
-  Widget _buildTrayBackground() {
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.02),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: Colors.white.withOpacity(0.05)),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.1),
-            blurRadius: 10,
-            offset: const Offset(0, -2),
-          )
-        ],
-      ),
-      child: Stack(
-        children: [
-          // Tray Label
-          Positioned(
-            top: 8,
-            left: 16,
-            child: Text(
-              'TRAY / DRAWER',
-              style: TextStyle(
-                fontSize: 10,
-                fontWeight: FontWeight.bold,
-                letterSpacing: 1.2,
-                color: Colors.white.withOpacity(0.3),
-              ),
-            ),
-          ),
 
-          // Tray Clean Up Helper Button
-          Positioned(
-            top: 2,
-            right: 4,
-            child: TextButton.icon(
-              style: TextButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                minimumSize: Size.zero,
-                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              ),
-              icon: const Icon(Icons.auto_awesome_motion, size: 12, color: Colors.amberAccent),
-              label: const Text(
-                'ORGANIZE',
-                style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Colors.amberAccent),
-              ),
-              onPressed: _organizeTrayPieces,
-            ),
+
+  // Background visual container for the bottom tray (no text, direct drag scrolling)
+  Widget _buildTrayBackground() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // 1. Divider Line
+        Container(
+          height: 1.0,
+          color: Colors.white.withOpacity(0.08),
+        ),
+
+        // 2. Transparent Touch Target for scrolling (opaque behavior to catch all touches)
+        Expanded(
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onPanUpdate: (details) {
+              _scrollTray(-details.delta.dx);
+            },
+            child: const SizedBox.expand(),
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
-
   // Dynamic stack of Jigsaw Pieces
   List<Widget> _buildPuzzlePieces({required bool snappedOnly}) {
     final w = _boardSize / _cols;
     final h = _boardSize / _rows;
-    final pw = w * 1.4;
-    final ph = h * 1.4;
+    final boardPw = w * 1.4;
+    final boardPh = h * 1.4;
+
+    // Fixed drawer piece size (same for all difficulties)
+    const drawerPw = 75.0;
+    const drawerPh = 75.0;
 
     final List<Widget> list = [];
 
     for (int i = 0; i < _pieces.length; i++) {
       final piece = _pieces[i];
       if (piece.isSnapped != snappedOnly) continue;
+
+      final isDraggingThis = _isDraggingPiece && _activeDraggingIndex == i;
+      final pw = (piece.isSnapped || isDraggingThis) ? boardPw : drawerPw;
+      final ph = (piece.isSnapped || isDraggingThis) ? boardPh : drawerPh;
+      final scale = (piece.isSnapped || isDraggingThis) ? 1.0 : (drawerPw / boardPw);
 
       list.add(
         Positioned(
@@ -615,19 +581,52 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> {
           child: GestureDetector(
             onPanStart: (details) {
               if (piece.isSnapped) return;
+              _isScrollingTray = false;
+              _isDraggingPiece = false;
               setState(() {
                 _activeDraggingIndex = i;
               });
             },
             onPanUpdate: (details) {
               if (piece.isSnapped) return;
-              setState(() {
-                piece.currentPosition += details.delta;
-              });
+              if (!_isScrollingTray && !_isDraggingPiece) {
+                final dx = details.delta.dx.abs();
+                final dy = details.delta.dy.abs();
+                if (dx > dy * 1.2) {
+                  _isScrollingTray = true;
+                } else if (dy > dx * 1.2 || details.delta.dy < -0.5) {
+                  _isDraggingPiece = true;
+                  // Adjust currentPosition to prevent visual jump due to scaling up
+                  setState(() {
+                    piece.currentPosition = Offset(
+                      piece.currentPosition.dx - (boardPw - drawerPw) / 2,
+                      piece.currentPosition.dy - (boardPh - drawerPh) / 2,
+                    );
+                  });
+                }
+              }
+
+              if (_isScrollingTray) {
+                _scrollTray(-details.delta.dx);
+              } else if (_isDraggingPiece) {
+                setState(() {
+                  piece.currentPosition += details.delta;
+                });
+              }
             },
             onPanEnd: (details) {
               if (piece.isSnapped) return;
-              _checkSnap(i);
+              final wasDragging = _isDraggingPiece;
+              setState(() {
+                _activeDraggingIndex = null;
+                _isScrollingTray = false;
+                _isDraggingPiece = false;
+              });
+              if (wasDragging) {
+                _checkSnap(i);
+              } else {
+                _organizeTrayPieces();
+              }
             },
             child: SizedBox(
               width: pw,
@@ -652,12 +651,12 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> {
                     child: Stack(
                       children: [
                         Positioned(
-                          left: -piece.col * w + 0.20 * w,
-                          top: -piece.row * h + 0.20 * h,
+                          left: (-piece.col * w + 0.20 * w) * scale,
+                          top: (-piece.row * h + 0.20 * h) * scale,
                           child: Image.network(
                             widget.imageUrl,
-                            width: _boardSize,
-                            height: _boardSize,
+                            width: _boardSize * scale,
+                            height: _boardSize * scale,
                             fit: BoxFit.fill,
                             errorBuilder: (context, error, stackTrace) {
                               return Container(
@@ -741,16 +740,7 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> {
                     color: Colors.white.withOpacity(0.7),
                   ),
                 ),
-                const SizedBox(height: 24),
-                // Statistics
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [
-                    _buildStatCard('TIME', _formatTime(_secondsElapsed)),
-                    _buildStatCard('MOVES', '$_moves'),
-                  ],
-                ),
-                const SizedBox(height: 24),
+
                 ElevatedButton.icon(
                   onPressed: _resetPuzzle,
                   style: ElevatedButton.styleFrom(
@@ -773,39 +763,7 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> {
     );
   }
 
-  // Small metrics display inside the victory modal
-  Widget _buildStatCard(String label, String value) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.03),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.white.withOpacity(0.05)),
-      ),
-      child: Column(
-        children: [
-          Text(
-            label,
-            style: TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.bold,
-              color: Colors.white.withOpacity(0.4),
-              letterSpacing: 1.0,
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            value,
-            style: const TextStyle(
-              fontSize: 20,
-              fontWeight: FontWeight.bold,
-              color: Colors.white,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
+
 }
 
 // Custom Clipper that defines the jigsaw edge shapes
@@ -1090,20 +1048,24 @@ class _HomeScreenState extends State<HomeScreen> {
                     children: [
                       Row(
                         children: [
-                          Container(
-                            padding: const EdgeInsets.all(8),
-                            decoration: BoxDecoration(
-                              color: Colors.cyanAccent.withOpacity(0.1),
+                          SizedBox(
+                            width: 44,
+                            height: 44,
+                            child: ClipRRect(
                               borderRadius: BorderRadius.circular(12),
-                              border: Border.all(
-                                color: Colors.cyanAccent.withOpacity(0.3),
-                                width: 1,
+                              child: Image.asset(
+                                'assets/puzzle.png',
+                                fit: BoxFit.cover,
+                                errorBuilder: (context, error, stackTrace) {
+                                  return Container(
+                                    color: const Color(0xFF1E293B),
+                                    child: const Icon(
+                                      Icons.grid_view_rounded,
+                                      color: Colors.cyanAccent,
+                                    ),
+                                  );
+                                },
                               ),
-                            ),
-                            child: const Icon(
-                              Icons.grid_view_rounded,
-                              color: Colors.cyanAccent,
-                              size: 28,
                             ),
                           ),
                           const SizedBox(width: 16),
@@ -1112,7 +1074,7 @@ class _HomeScreenState extends State<HomeScreen> {
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 const Text(
-                                  "SELECT PUZZLE",
+                                  "QuickPuzzle",
                                   style: TextStyle(
                                     fontSize: 24,
                                     fontWeight: FontWeight.w900,
@@ -1131,6 +1093,21 @@ class _HomeScreenState extends State<HomeScreen> {
                                 ),
                               ],
                             ),
+                          ),
+                          IconButton(
+                            icon: const Icon(
+                              Icons.settings_rounded,
+                              color: Colors.amberAccent,
+                              size: 28,
+                            ),
+                            tooltip: 'Settings',
+                            onPressed: () {
+                              Navigator.of(context).push(
+                                MaterialPageRoute(
+                                  builder: (context) => const SettingsScreen(),
+                                ),
+                              );
+                            },
                           ),
                         ],
                       ),
@@ -1183,7 +1160,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         crossAxisCount: 2,
                         crossAxisSpacing: 16,
                         mainAxisSpacing: 16,
-                        childAspectRatio: 0.8,
+                        childAspectRatio: 1.0,
                       ),
                       delegate: SliverChildBuilderDelegate(
                         (context, index) {
@@ -1220,10 +1197,6 @@ class _HomeScreenState extends State<HomeScreen> {
       decoration: BoxDecoration(
         color: const Color(0xFF1E293B),
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(
-          color: Colors.white.withOpacity(0.08),
-          width: 1,
-        ),
         boxShadow: [
           BoxShadow(
             color: Colors.black.withOpacity(0.2),
@@ -1233,96 +1206,40 @@ class _HomeScreenState extends State<HomeScreen> {
         ],
       ),
       child: ClipRRect(
-        borderRadius: BorderRadius.circular(19),
+        borderRadius: BorderRadius.circular(20),
         child: InkWell(
           onTap: () => _navigateToGame(imageUrl),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              // Image Thumbnail
-              Expanded(
-                child: Hero(
-                  tag: imageUrl,
-                  child: Image.network(
-                    imageUrl,
-                    fit: BoxFit.cover,
-                    loadingBuilder: (context, child, loadingProgress) {
-                      if (loadingProgress == null) return child;
-                      return Center(
-                        child: SizedBox(
-                          width: 24,
-                          height: 24,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            valueColor: AlwaysStoppedAnimation<Color>(
-                              Colors.cyanAccent.withOpacity(0.5),
-                            ),
-                          ),
-                        ),
-                      );
-                    },
-                    errorBuilder: (context, error, stackTrace) {
-                      return Container(
-                        color: const Color(0xFF0F172A),
-                        child: const Icon(
-                          Icons.broken_image_rounded,
-                          color: Colors.cyanAccent,
-                          size: 32,
-                        ),
-                      );
-                    },
-                  ),
-                ),
-              ),
-              
-              // Metadata overlay/details
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                decoration: const BoxDecoration(
-                  color: Color(0xFF0F172A),
-                  border: Border(
-                    top: BorderSide(
-                      color: Colors.white10,
-                      width: 0.5,
-                    ),
-                  ),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      fileName,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.white,
+          child: Hero(
+            tag: imageUrl,
+            child: Image.network(
+              imageUrl,
+              fit: BoxFit.cover,
+              loadingBuilder: (context, child, loadingProgress) {
+                if (loadingProgress == null) return child;
+                return Center(
+                  child: SizedBox(
+                    width: 24,
+                    height: 24,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      valueColor: AlwaysStoppedAnimation<Color>(
+                        Colors.cyanAccent.withOpacity(0.5),
                       ),
                     ),
-                    const SizedBox(height: 2),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text(
-                          uploadDateStr,
-                          style: TextStyle(
-                            fontSize: 10,
-                            color: Colors.white.withOpacity(0.4),
-                          ),
-                        ),
-                        const Icon(
-                          Icons.play_circle_fill_rounded,
-                          color: Colors.cyanAccent,
-                          size: 16,
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            ],
+                  ),
+                );
+              },
+              errorBuilder: (context, error, stackTrace) {
+                return Container(
+                  color: const Color(0xFF0F172A),
+                  child: const Icon(
+                    Icons.broken_image_rounded,
+                    color: Colors.cyanAccent,
+                    size: 32,
+                  ),
+                );
+              },
+            ),
           ),
         ),
       ),
@@ -1652,6 +1569,232 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
           ),
         ],
       ),
+    );
+  }
+}
+
+class SettingsScreen extends StatelessWidget {
+  const SettingsScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFF0F172A),
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back_ios_new_rounded, color: Colors.cyanAccent),
+          onPressed: () => Navigator.of(context).pop(),
+        ),
+        title: const Text(
+          'SETTINGS',
+          style: TextStyle(
+            fontSize: 18,
+            fontWeight: FontWeight.w900,
+            letterSpacing: 2.0,
+            color: Colors.white,
+          ),
+        ),
+        centerTitle: true,
+      ),
+      body: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            colors: [Color(0xFF0F172A), Color(0xFF1E293B)],
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+          ),
+        ),
+        child: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(24.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const SizedBox(height: 16),
+                _buildSettingsCard(
+                  context: context,
+                  title: 'Privacy Policy',
+                  icon: Icons.privacy_tip_rounded,
+                  onTap: () {
+                    _showContentDialog(
+                      context,
+                      'Privacy Policy',
+                      'At QuickPuzzle, we prioritize your privacy. This app does not collect, share, or store any personal data or images uploaded by users. All image data is processed directly inside your device and Firebase Firestore database. We do not use third-party tracking or advertising SDKs. Your gameplay data and Firestore connections are securely monitored in accordance with standard Firebase security protocols.',
+                    );
+                  },
+                ),
+                const SizedBox(height: 16),
+                _buildSettingsCard(
+                  context: context,
+                  title: 'Help & Support',
+                  icon: Icons.help_outline_rounded,
+                  onTap: () async {
+                    final emailUri = Uri(
+                      scheme: 'mailto',
+                      path: 'puzzle0798@gmail.com',
+                      queryParameters: {
+                        'subject': 'QuickPuzzle Help & Support',
+                      },
+                    );
+                    if (await canLaunchUrl(emailUri)) {
+                      await launchUrl(emailUri);
+                    } else {
+                      if (context.mounted) {
+                        _showContentDialog(
+                          context,
+                          'Help & Support',
+                          'For help and support, please contact us at:\n\npuzzle0798@gmail.com\n\n(We could not open your email application automatically.)',
+                        );
+                      }
+                    }
+                  },
+                ),
+                const SizedBox(height: 16),
+                _buildSettingsCard(
+                  context: context,
+                  title: 'Share App',
+                  icon: Icons.share_rounded,
+                  onTap: () {
+                    Share.share('Check out QuickPuzzle, the ultimate custom jigsaw puzzle game app! Download and start solving puzzles: https://quickpuzzle.com/download');
+                  },
+                ),
+                const Spacer(),
+                Text(
+                  'QuickPuzzle v1.0.0',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Colors.white.withOpacity(0.3),
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSettingsCard({
+    required BuildContext context,
+    required String title,
+    required IconData icon,
+    required VoidCallback onTap,
+  }) {
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFF1E293B).withOpacity(0.6),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white.withOpacity(0.05), width: 1.0),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.15),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(16),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
+            child: Row(
+              children: [
+                Icon(icon, color: Colors.cyanAccent, size: 24),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Text(
+                    title,
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
+                    ),
+                  ),
+                ),
+                Icon(
+                  Icons.arrow_forward_ios_rounded,
+                  color: Colors.white.withOpacity(0.3),
+                  size: 16,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showContentDialog(BuildContext context, String title, String text) {
+    showDialog(
+      context: context,
+      builder: (context) {
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          child: Container(
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              color: const Color(0xFF1E293B),
+              borderRadius: BorderRadius.circular(24),
+              border: Border.all(color: Colors.cyanAccent.withOpacity(0.3), width: 1.5),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.cyanAccent.withOpacity(0.1),
+                  blurRadius: 30,
+                  spreadRadius: 2,
+                )
+              ],
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title.toUpperCase(),
+                  style: const TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.cyanAccent,
+                    letterSpacing: 1.5,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                SingleChildScrollView(
+                  child: Text(
+                    text,
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: Colors.white.withOpacity(0.8),
+                      height: 1.5,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 24),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: const Text(
+                      'CLOSE',
+                      style: TextStyle(
+                        color: Colors.cyanAccent,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 1.0,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 }
