@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -78,7 +79,9 @@ class JigsawPieceModel {
 }
 
 class JigsawGameScreen extends StatefulWidget {
-  const JigsawGameScreen({super.key});
+  final String imageUrl;
+
+  const JigsawGameScreen({super.key, required this.imageUrl});
 
   @override
   State<JigsawGameScreen> createState() => _JigsawGameScreenState();
@@ -370,27 +373,46 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          // Time & Moves
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+          // Back Button + Time & Moves
+          Row(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              Text(
-                'TIME: ${_formatTime(_secondsElapsed)}',
-                style: const TextStyle(
-                  fontSize: 15,
-                  fontWeight: FontWeight.bold,
-                  letterSpacing: 1.0,
+              IconButton(
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(),
+                icon: const Icon(
+                  Icons.arrow_back_ios_new_rounded,
                   color: Colors.cyanAccent,
+                  size: 20,
                 ),
+                tooltip: 'Back to Menu',
+                onPressed: () {
+                  Navigator.of(context).pop();
+                },
               ),
-              const SizedBox(height: 2),
-              Text(
-                'MOVES: $_moves',
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w500,
-                  color: Colors.white.withOpacity(0.6),
-                ),
+              const SizedBox(width: 12),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'TIME: ${_formatTime(_secondsElapsed)}',
+                    style: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 1.0,
+                      color: Colors.cyanAccent,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    'MOVES: $_moves',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w500,
+                      color: Colors.white.withOpacity(0.6),
+                    ),
+                  ),
+                ],
               ),
             ],
           ),
@@ -463,22 +485,24 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> {
 
   // Renders the board backdrop showing layout hints
   Widget _buildGameBoard() {
-    return Container(
-      width: _boardSize,
-      height: _boardSize,
-      decoration: BoxDecoration(
-        color: const Color(0xFF020617).withOpacity(0.5),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.white.withOpacity(0.05), width: 1),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.cyanAccent.withOpacity(0.01),
-            blurRadius: 20,
-            spreadRadius: 2,
-          )
-        ],
-      ),
-      child: Stack(
+    return Hero(
+      tag: widget.imageUrl,
+      child: Container(
+        width: _boardSize,
+        height: _boardSize,
+        decoration: BoxDecoration(
+          color: const Color(0xFF020617).withOpacity(0.5),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: Colors.white.withOpacity(0.05), width: 1),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.cyanAccent.withOpacity(0.01),
+              blurRadius: 20,
+              spreadRadius: 2,
+            )
+          ],
+        ),
+        child: Stack(
         children: [
           // Background Hint Image (Toggleable)
           if (_showHint)
@@ -486,11 +510,21 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> {
               borderRadius: BorderRadius.circular(11),
               child: Opacity(
                 opacity: 0.20,
-                child: Image.asset(
-                  'assets/puzzle.png',
+                child: Image.network(
+                  widget.imageUrl,
                   width: _boardSize,
                   height: _boardSize,
                   fit: BoxFit.fill,
+                  loadingBuilder: (context, child, loadingProgress) {
+                    if (loadingProgress == null) return child;
+                    return const Center(child: CircularProgressIndicator());
+                  },
+                  errorBuilder: (context, error, stackTrace) {
+                    return Container(
+                      color: const Color(0xFF1E293B),
+                      child: const Icon(Icons.broken_image, color: Colors.cyanAccent, size: 48),
+                    );
+                  },
                 ),
               ),
             ),
@@ -502,6 +536,7 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> {
           ),
         ],
       ),
+     ),
     );
   }
 
@@ -619,11 +654,17 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> {
                         Positioned(
                           left: -piece.col * w + 0.20 * w,
                           top: -piece.row * h + 0.20 * h,
-                          child: Image.asset(
-                            'assets/puzzle.png',
+                          child: Image.network(
+                            widget.imageUrl,
                             width: _boardSize,
                             height: _boardSize,
                             fit: BoxFit.fill,
+                            errorBuilder: (context, error, stackTrace) {
+                              return Container(
+                                color: const Color(0xFF1E293B),
+                                child: const Icon(Icons.broken_image, color: Colors.cyanAccent),
+                              );
+                            },
                           ),
                         ),
                       ],
@@ -1016,6 +1057,397 @@ class BoardGridPainter extends CustomPainter {
       oldDelegate.rows != rows || oldDelegate.cols != cols;
 }
 
+class HomeScreen extends StatefulWidget {
+  const HomeScreen({super.key});
+
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFF0F172A),
+      body: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            colors: [Color(0xFF0F172A), Color(0xFF1E293B)],
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+          ),
+        ),
+        child: SafeArea(
+          child: CustomScrollView(
+            physics: const BouncingScrollPhysics(),
+            slivers: [
+              // Custom Title / Header
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 32.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: Colors.cyanAccent.withOpacity(0.1),
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(
+                                color: Colors.cyanAccent.withOpacity(0.3),
+                                width: 1,
+                              ),
+                            ),
+                            child: const Icon(
+                              Icons.grid_view_rounded,
+                              color: Colors.cyanAccent,
+                              size: 28,
+                            ),
+                          ),
+                          const SizedBox(width: 16),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text(
+                                  "SELECT PUZZLE",
+                                  style: TextStyle(
+                                    fontSize: 24,
+                                    fontWeight: FontWeight.w900,
+                                    color: Colors.white,
+                                    letterSpacing: 1.5,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  "Choose a puzzle image to start",
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    color: Colors.white.withOpacity(0.5),
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+
+              // Firestore Stream Builder
+              StreamBuilder<QuerySnapshot>(
+                stream: FirebaseFirestore.instance
+                    .collection('puzzle_images')
+                    .orderBy('uploadedAt', descending: true)
+                    .snapshots(),
+                builder: (context, snapshot) {
+                  if (snapshot.hasError) {
+                    return SliverFillRemaining(
+                      hasScrollBody: false,
+                      child: Center(
+                        child: _buildErrorWidget(snapshot.error.toString()),
+                      ),
+                    );
+                  }
+
+                  if (snapshot.connectionState == ConnectionState.waiting) {
+                    return const SliverFillRemaining(
+                      hasScrollBody: false,
+                      child: Center(
+                        child: CircularProgressIndicator(
+                          valueColor: AlwaysStoppedAnimation<Color>(Colors.cyanAccent),
+                        ),
+                      ),
+                    );
+                  }
+
+                  final docs = snapshot.data?.docs ?? [];
+                  if (docs.isEmpty) {
+                    return SliverFillRemaining(
+                      hasScrollBody: false,
+                      child: Center(
+                        child: _buildEmptyStateWidget(),
+                      ),
+                    );
+                  }
+
+                  return SliverPadding(
+                    padding: const EdgeInsets.symmetric(horizontal: 24.0),
+                    sliver: SliverGrid(
+                      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                        crossAxisCount: 2,
+                        crossAxisSpacing: 16,
+                        mainAxisSpacing: 16,
+                        childAspectRatio: 0.8,
+                      ),
+                      delegate: SliverChildBuilderDelegate(
+                        (context, index) {
+                          final doc = docs[index];
+                          final data = doc.data() as Map<String, dynamic>;
+                          final imageUrl = data['url'] as String? ?? '';
+                          final fileName = data['fileName'] as String? ?? 'Unnamed Puzzle';
+                          
+                          // Format Upload Date
+                          String uploadDateStr = 'Unknown Date';
+                          if (data['uploadedAt'] != null && data['uploadedAt'] is Timestamp) {
+                            final timestamp = data['uploadedAt'] as Timestamp;
+                            final date = timestamp.toDate();
+                            uploadDateStr = "${date.day}/${date.month}/${date.year}";
+                          }
+
+                          return _buildPuzzleCard(imageUrl, fileName, uploadDateStr);
+                        },
+                        childCount: docs.length,
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPuzzleCard(String imageUrl, String fileName, String uploadDateStr) {
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFF1E293B),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: Colors.white.withOpacity(0.08),
+          width: 1,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.2),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(19),
+        child: InkWell(
+          onTap: () => _navigateToGame(imageUrl),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // Image Thumbnail
+              Expanded(
+                child: Hero(
+                  tag: imageUrl,
+                  child: Image.network(
+                    imageUrl,
+                    fit: BoxFit.cover,
+                    loadingBuilder: (context, child, loadingProgress) {
+                      if (loadingProgress == null) return child;
+                      return Center(
+                        child: SizedBox(
+                          width: 24,
+                          height: 24,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            valueColor: AlwaysStoppedAnimation<Color>(
+                              Colors.cyanAccent.withOpacity(0.5),
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                    errorBuilder: (context, error, stackTrace) {
+                      return Container(
+                        color: const Color(0xFF0F172A),
+                        child: const Icon(
+                          Icons.broken_image_rounded,
+                          color: Colors.cyanAccent,
+                          size: 32,
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ),
+              
+              // Metadata overlay/details
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                decoration: const BoxDecoration(
+                  color: Color(0xFF0F172A),
+                  border: Border(
+                    top: BorderSide(
+                      color: Colors.white10,
+                      width: 0.5,
+                    ),
+                  ),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      fileName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          uploadDateStr,
+                          style: TextStyle(
+                            fontSize: 10,
+                            color: Colors.white.withOpacity(0.4),
+                          ),
+                        ),
+                        const Icon(
+                          Icons.play_circle_fill_rounded,
+                          color: Colors.cyanAccent,
+                          size: 16,
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildEmptyStateWidget() {
+    return Container(
+      padding: const EdgeInsets.all(32),
+      margin: const EdgeInsets.symmetric(horizontal: 24),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1E293B).withOpacity(0.5),
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(
+          color: Colors.white.withOpacity(0.05),
+        ),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: Colors.cyanAccent.withOpacity(0.05),
+              shape: BoxShape.circle,
+              border: Border.all(
+                color: Colors.cyanAccent.withOpacity(0.2),
+              ),
+            ),
+            child: const Icon(
+              Icons.image_not_supported_rounded,
+              color: Colors.cyanAccent,
+              size: 48,
+            ),
+          ),
+          const SizedBox(height: 20),
+          const Text(
+            "No Puzzles Uploaded",
+            style: TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+              color: Colors.white,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            "Please use the Admin App to upload images and they will show up here dynamically.",
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: 13,
+              color: Colors.white.withOpacity(0.5),
+              height: 1.4,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildErrorWidget(String errorMsg) {
+    return Container(
+      padding: const EdgeInsets.all(24),
+      margin: const EdgeInsets.symmetric(horizontal: 24),
+      decoration: BoxDecoration(
+        color: Colors.redAccent.withOpacity(0.05),
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(
+          color: Colors.redAccent.withOpacity(0.2),
+        ),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(
+            Icons.error_outline_rounded,
+            color: Colors.redAccent,
+            size: 48,
+          ),
+          const SizedBox(height: 16),
+          const Text(
+            "Connection Error",
+            style: TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+              color: Colors.white,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            errorMsg.contains('PERMISSION_DENIED')
+                ? "Access denied. Please check Firestore Security Rules on Firebase Console."
+                : "Failed to connect: $errorMsg",
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: 13,
+              color: Colors.white.withOpacity(0.6),
+              height: 1.4,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _navigateToGame(String imageUrl) {
+    Navigator.of(context).push(
+      PageRouteBuilder(
+        pageBuilder: (context, animation, secondaryAnimation) => JigsawGameScreen(imageUrl: imageUrl),
+        transitionsBuilder: (context, animation, secondaryAnimation, child) {
+          return FadeTransition(
+            opacity: animation,
+            child: ScaleTransition(
+              scale: Tween<double>(begin: 0.95, end: 1.0).animate(
+                CurvedAnimation(parent: animation, curve: Curves.easeInOut),
+              ),
+              child: child,
+            ),
+          );
+        },
+        transitionDuration: const Duration(milliseconds: 500),
+      ),
+    );
+  }
+}
+
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
 
@@ -1061,7 +1493,7 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
   void _navigateToGame() {
     Navigator.of(context).pushReplacement(
       PageRouteBuilder(
-        pageBuilder: (context, animation, secondaryAnimation) => const JigsawGameScreen(),
+        pageBuilder: (context, animation, secondaryAnimation) => const HomeScreen(),
         transitionsBuilder: (context, animation, secondaryAnimation, child) {
           return FadeTransition(
             opacity: animation,
@@ -1080,7 +1512,6 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     final percent = (_progressValue * 100).toInt();
 
     return Scaffold(
