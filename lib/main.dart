@@ -6,6 +6,7 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -496,21 +497,20 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> {
               borderRadius: BorderRadius.zero,
               child: Opacity(
                 opacity: 0.20,
-                child: Image.network(
-                  widget.imageUrl,
+                child: CachedNetworkImage(
+                  imageUrl: widget.imageUrl,
                   width: _boardSize,
                   height: _boardSize,
                   fit: BoxFit.fill,
-                  loadingBuilder: (context, child, loadingProgress) {
-                    if (loadingProgress == null) return child;
-                    return const Center(child: CircularProgressIndicator());
-                  },
-                  errorBuilder: (context, error, stackTrace) {
-                    return Container(
-                      color: const Color(0xFF1E293B),
-                      child: const Icon(Icons.broken_image, color: Colors.cyanAccent, size: 48),
-                    );
-                  },
+                  placeholder: (context, url) => const Center(
+                    child: CircularProgressIndicator(
+                      valueColor: AlwaysStoppedAnimation<Color>(Colors.cyanAccent),
+                    ),
+                  ),
+                  errorWidget: (context, url, error) => Container(
+                    color: const Color(0xFF1E293B),
+                    child: const Icon(Icons.broken_image, color: Colors.cyanAccent, size: 48),
+                  ),
                 ),
               ),
             ),
@@ -653,17 +653,15 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> {
                         Positioned(
                           left: (-piece.col * w + 0.20 * w) * scale,
                           top: (-piece.row * h + 0.20 * h) * scale,
-                          child: Image.network(
-                            widget.imageUrl,
+                          child: CachedNetworkImage(
+                            imageUrl: widget.imageUrl,
                             width: _boardSize * scale,
                             height: _boardSize * scale,
                             fit: BoxFit.fill,
-                            errorBuilder: (context, error, stackTrace) {
-                              return Container(
-                                color: const Color(0xFF1E293B),
-                                child: const Icon(Icons.broken_image, color: Colors.cyanAccent),
-                              );
-                            },
+                            errorWidget: (context, url, error) => Container(
+                              color: const Color(0xFF1E293B),
+                              child: const Icon(Icons.broken_image, color: Colors.cyanAccent),
+                            ),
                           ),
                         ),
                       ],
@@ -1211,34 +1209,29 @@ class _HomeScreenState extends State<HomeScreen> {
           onTap: () => _navigateToGame(imageUrl),
           child: Hero(
             tag: imageUrl,
-            child: Image.network(
-              imageUrl,
+            child: CachedNetworkImage(
+              imageUrl: imageUrl,
               fit: BoxFit.cover,
-              loadingBuilder: (context, child, loadingProgress) {
-                if (loadingProgress == null) return child;
-                return Center(
-                  child: SizedBox(
-                    width: 24,
-                    height: 24,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      valueColor: AlwaysStoppedAnimation<Color>(
-                        Colors.cyanAccent.withOpacity(0.5),
-                      ),
+              placeholder: (context, url) => Center(
+                child: SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    valueColor: AlwaysStoppedAnimation<Color>(
+                      Colors.cyanAccent.withOpacity(0.5),
                     ),
                   ),
-                );
-              },
-              errorBuilder: (context, error, stackTrace) {
-                return Container(
-                  color: const Color(0xFF0F172A),
-                  child: const Icon(
-                    Icons.broken_image_rounded,
-                    color: Colors.cyanAccent,
-                    size: 32,
-                  ),
-                );
-              },
+                ),
+              ),
+              errorWidget: (context, url, error) => Container(
+                color: const Color(0xFF0F172A),
+                child: const Icon(
+                  Icons.broken_image_rounded,
+                  color: Colors.cyanAccent,
+                  size: 32,
+                ),
+              ),
             ),
           ),
         ),
