@@ -1,6 +1,6 @@
 {
-    "name": "QuickPuzzle",
-    "short_name": "QuickPuzzle",
+    "name": "Gain Puzzle",
+    "short_name": "Gain Puzzle",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",
