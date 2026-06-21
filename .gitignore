@@ -43,3 +43,16 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Credentials and keystores
+android/app/google-services.json
+ios/Runner/GoogleService-Info.plist
+*.keystore
+*.jks
+*.p12
+*.pem
+*.key
+*.db
+*.local
+.env*
+
