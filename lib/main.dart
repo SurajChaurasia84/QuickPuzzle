@@ -1617,12 +1617,19 @@ class SettingsScreen extends StatelessWidget {
                   context: context,
                   title: 'Privacy Policy',
                   icon: Icons.privacy_tip_rounded,
-                  onTap: () {
-                    _showContentDialog(
-                      context,
-                      'Privacy Policy',
-                      'At QuickPuzzle, we prioritize your privacy. This app does not collect, share, or store any personal data or images uploaded by users. All image data is processed directly inside your device and Firebase Firestore database. We do not use third-party tracking or advertising SDKs. Your gameplay data and Firestore connections are securely monitored in accordance with standard Firebase security protocols.',
-                    );
+                  onTap: () async {
+                    final url = Uri.parse('https://surajchaurasia84.github.io/QuickPuzzle/');
+                    if (await canLaunchUrl(url)) {
+                      await launchUrl(url, mode: LaunchMode.externalApplication);
+                    } else {
+                      if (context.mounted) {
+                        _showContentDialog(
+                          context,
+                          'Privacy Policy',
+                          'Could not open the Privacy Policy link. Please visit:\n\nhttps://surajchaurasia84.github.io/QuickPuzzle/',
+                        );
+                      }
+                    }
                   },
                 ),
                 const SizedBox(height: 16),
@@ -1657,7 +1664,7 @@ class SettingsScreen extends StatelessWidget {
                   title: 'Share App',
                   icon: Icons.share_rounded,
                   onTap: () {
-                    Share.share('Check out QuickPuzzle, the ultimate custom jigsaw puzzle game app! Download and start solving puzzles: https://quickpuzzle.com/download');
+                    Share.share('Check out QuickPuzzle, the ultimate custom jigsaw puzzle game app! Download and start solving puzzles: https://play.google.com/store/apps/details?id=com.quick.puzzleapp');
                   },
                 ),
                 const Spacer(),
