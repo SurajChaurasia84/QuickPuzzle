@@ -36,6 +36,8 @@ dependencies:
   cupertino_icons: ^1.0.8
   firebase_core: ^3.1.0
   cloud_firestore: ^5.0.2
+  firebase_auth: ^5.1.1
+  google_sign_in: ^6.2.1
   share_plus: ^13.1.0
   url_launcher: ^6.3.2
   cached_network_image: ^3.4.1
@@ -64,8 +66,8 @@ flutter:
   uses-material-design: true
 
   assets:
-    - assets/puzzle.png
     - assets/icon.jpeg
+    - assets/logo.jpeg
 
   # To add assets to your application, add an assets section, like this:
   # assets:
@@ -101,5 +103,5 @@ flutter:
 flutter_launcher_icons:
   android: "launcher_icon"
   ios: true
-  image_path: "assets/puzzle.png"
+  image_path: "assets/logo.jpeg"
   remove_alpha_ios: true
