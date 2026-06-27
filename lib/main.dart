@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:google_sign_in/google_sign_in.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:cached_network_image/cached_network_image.dart';
@@ -25,16 +27,16 @@ void main() async {
   SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
   ]);
-  runApp(const GainPuzzleApp());
+  runApp(const TopPuzzleApp());
 }
 
-class GainPuzzleApp extends StatelessWidget {
-  const GainPuzzleApp({super.key});
+class TopPuzzleApp extends StatelessWidget {
+  const TopPuzzleApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Gain Puzzle',
+      title: 'Top Puzzle',
       debugShowCheckedModeBanner: false,
       theme: ThemeData.dark().copyWith(
         scaffoldBackgroundColor: const Color(0xFF0F172A),
@@ -78,6 +80,8 @@ class JigsawPieceModel {
   final JigsawPieceDesign design;
   Offset currentPosition;
   bool isSnapped;
+  int? currentGridRow;
+  int? currentGridCol;
 
   JigsawPieceModel({
     required this.row,
@@ -85,7 +89,44 @@ class JigsawPieceModel {
     required this.design,
     required this.currentPosition,
     this.isSnapped = false,
+    this.currentGridRow,
+    this.currentGridCol,
   });
+}
+
+class SparkleParticle {
+  Offset position;
+  Offset velocity;
+  final Color color;
+  final double size;
+  double life;
+
+  SparkleParticle({
+    required this.position,
+    required this.velocity,
+    required this.color,
+    required this.size,
+    required this.life,
+  });
+}
+
+class SparklePainter extends CustomPainter {
+  final List<SparkleParticle> sparkles;
+
+  SparklePainter(this.sparkles);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()..style = PaintingStyle.fill;
+
+    for (final p in sparkles) {
+      paint.color = p.color.withOpacity(p.life.clamp(0.0, 1.0));
+      canvas.drawCircle(p.position, p.size, paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant SparklePainter oldDelegate) => true;
 }
 
 class JigsawGameScreen extends StatefulWidget {
@@ -110,7 +151,7 @@ class JigsawGameScreen extends StatefulWidget {
   State<JigsawGameScreen> createState() => _JigsawGameScreenState();
 }
 
-class _JigsawGameScreenState extends State<JigsawGameScreen> {
+class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProviderStateMixin {
   // Grid size
   int _rows = 3;
   int _cols = 3;
@@ -139,18 +180,79 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> {
   int _secondsRemaining = 0;
   bool _isGameOver = false;
 
+  // Sparkle Particles
+  final List<SparkleParticle> _sparkles = [];
+  AnimationController? _sparkleController;
+
   @override
   void initState() {
     super.initState();
     _rows = widget.initialRows ?? 3;
     _cols = widget.initialCols ?? 3;
     _startTimerIfNeeded();
+    _sparkleController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1000),
+    )..addListener(() {
+        _updateSparkles();
+      });
   }
 
   @override
   void dispose() {
     _countdownTimer?.cancel();
+    _sparkleController?.dispose();
     super.dispose();
+  }
+
+  void _updateSparkles() {
+    if (_sparkles.isEmpty) {
+      _sparkleController?.stop();
+      return;
+    }
+    setState(() {
+      for (int i = _sparkles.length - 1; i >= 0; i--) {
+        final p = _sparkles[i];
+        p.position += p.velocity;
+        p.life -= 0.05; // fade out
+        if (p.life <= 0) {
+          _sparkles.removeAt(i);
+        }
+      }
+    });
+  }
+
+  void _triggerSparklesAt(double centerX, double centerY) {
+    final random = math.Random();
+    final List<SparkleParticle> newSparkles = [];
+    
+    for (int i = 0; i < 18; i++) {
+      final angle = random.nextDouble() * 2 * math.pi;
+      final speed = 1.0 + random.nextDouble() * 3.5;
+      final velocity = Offset(math.cos(angle) * speed, math.sin(angle) * speed);
+      
+      final colors = [
+        Colors.cyanAccent,
+        Colors.amberAccent,
+        Colors.white,
+        Colors.yellowAccent,
+      ];
+      final color = colors[random.nextInt(colors.length)];
+      
+      newSparkles.add(SparkleParticle(
+        position: Offset(centerX, centerY),
+        velocity: velocity,
+        color: color,
+        size: 3.0 + random.nextDouble() * 4.0,
+        life: 1.0,
+      ));
+    }
+
+    setState(() {
+      _sparkles.addAll(newSparkles);
+    });
+
+    _sparkleController?.repeat();
   }
 
   void _startTimerIfNeeded() {
@@ -291,6 +393,7 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> {
       }
     }
 
+    generated.shuffle(math.Random());
     _pieces = generated;
     _organizeTrayPieces();
   }
@@ -353,24 +456,67 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> {
     final w = _boardSize / _cols;
     final h = _boardSize / _rows;
 
-    final targetLeft = _boardLeft + piece.col * w - 0.20 * w;
-    final targetTop = _boardTop + piece.row * h - 0.20 * h;
+    // Find the closest unoccupied grid cell on the board
+    int? targetR;
+    int? targetC;
+    double minDistance = double.infinity;
 
-    final dist = (piece.currentPosition - Offset(targetLeft, targetTop)).distance;
+    for (int r = 0; r < _rows; r++) {
+      for (int c = 0; c < _cols; c++) {
+        final isOccupied = _pieces.any((p) =>
+            p.isSnapped &&
+            p != piece &&
+            p.currentGridRow == r &&
+            p.currentGridCol == c);
+
+        if (isOccupied) continue;
+
+        final cellLeft = _boardLeft + c * w - 0.20 * w;
+        final cellTop = _boardTop + r * h - 0.20 * h;
+        final distance = (piece.currentPosition - Offset(cellLeft, cellTop)).distance;
+
+        if (distance < minDistance) {
+          minDistance = distance;
+          targetR = r;
+          targetC = c;
+        }
+      }
+    }
 
     setState(() {
-      // Snap tolerance of 22 pixels
-      if (dist < 22.0) {
-        piece.currentPosition = Offset(targetLeft, targetTop);
+      // Snap threshold: 35.0 pixels to closest cell
+      if (targetR != null && targetC != null && minDistance < 35.0) {
+        final cellLeft = _boardLeft + targetC * w - 0.20 * w;
+        final cellTop = _boardTop + targetR * h - 0.20 * h;
+
+        piece.currentPosition = Offset(cellLeft, cellTop);
         piece.isSnapped = true;
+        piece.currentGridRow = targetR;
+        piece.currentGridCol = targetC;
         HapticFeedback.mediumImpact();
 
+        // Sparkle if it's the CORRECT box!
+        if (targetR == piece.row && targetC == piece.col) {
+          final centerX = cellLeft + (w * 1.4) / 2;
+          final centerY = cellTop + (h * 1.4) / 2;
+          _triggerSparklesAt(centerX, centerY);
+        }
+
         // Check victory
-        if (_pieces.every((p) => p.isSnapped)) {
+        final allSnapped = _pieces.every((p) => p.isSnapped);
+        final allCorrect = _pieces.every((p) =>
+            p.isSnapped &&
+            p.currentGridRow == p.row &&
+            p.currentGridCol == p.col);
+
+        if (allSnapped && allCorrect) {
           _hasWon = true;
         }
       } else {
         // Return to its tray slot position
+        piece.isSnapped = false;
+        piece.currentGridRow = null;
+        piece.currentGridCol = null;
         _organizeTrayPieces();
       }
       _activeDraggingIndex = null;
@@ -384,15 +530,6 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> {
       _trayScrollOffset = 0.0;
       _generateAndShufflePieces();
       _startTimerIfNeeded();
-    });
-  }
-
-  // Handles difficulty toggling
-  void _setDifficulty(int gridDimension) {
-    setState(() {
-      _rows = gridDimension;
-      _cols = gridDimension;
-      _resetPuzzle();
     });
   }
 
@@ -444,41 +581,133 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> {
                     child: _buildHeaderHUD(),
                   ),
 
-                  // 2. Main Game Board Target
+                  // 2. Reward label — centered above the board
+                  if (widget.reward != null && widget.reward!.isNotEmpty)
+                    Positioned(
+                      top: _boardTop - 45,
+                      left: 0,
+                      right: 0,
+                      child: Center(
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 5),
+                          decoration: BoxDecoration(
+                            color: Colors.amberAccent.withOpacity(0.10),
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(color: Colors.amberAccent.withOpacity(0.35), width: 1),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(Icons.emoji_events_rounded, color: Colors.amberAccent, size: 15),
+                              const SizedBox(width: 6),
+                              const Text(
+                                'Reward: ',
+                                style: TextStyle(
+                                  color: Colors.white54,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                              Text(
+                                widget.reward!,
+                                style: const TextStyle(
+                                  color: Colors.amberAccent,
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.bold,
+                                  letterSpacing: 0.5,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+
+                  // 3. Main Game Board Target
                   Positioned(
                     left: _boardLeft,
                     top: _boardTop,
                     child: _buildGameBoard(),
                   ),
 
-                  // 2.5 Difficulty Selector Below the HUD (App Bar)
+                  // 3.5 Link button — centered below the board
+                  if (widget.link != null && widget.link!.isNotEmpty)
+                    Positioned(
+                      top: _boardTop + _boardSize + 8,
+                      left: 0,
+                      right: 0,
+                      child: Center(
+                        child: GestureDetector(
+                          onTap: () async {
+                            final uri = Uri.tryParse(widget.link!);
+                            if (uri != null && await canLaunchUrl(uri)) {
+                              await launchUrl(uri, mode: LaunchMode.externalApplication);
+                            }
+                          },
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                            decoration: BoxDecoration(
+                              color: Colors.white54.withOpacity(0.08),
+                              borderRadius: BorderRadius.circular(20),
+                              // border: Border.all(color: Colors.white54.withOpacity(0.30), width: 1),
+                            ),
+                            child: const Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.link_rounded, color: Colors.white54, size: 14),
+                                SizedBox(width: 6),
+                                Text(
+                                  'Visit Link',
+                                  style: TextStyle(
+                                    color: Colors.white54,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600,
+                                    letterSpacing: 0.5,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+
+                  // 2.5 Info Row: Grid Size (left) + Timer (right)
                   Positioned(
                     top: 68,
-                    left: 0,
-                    right: 0,
-                    child: Center(
-                      child: _buildDifficultySelector(),
+                    left: 16,
+                    right: 16,
+                    child: _buildInfoRow(),
+                  ),
+
+                  // 3. Bottom Tray visual card — hidden when hint is showing
+                  if (!_showHint)
+                    Positioned(
+                      left: 0,
+                      top: _trayTop - 8,
+                      right: 0,
+                      height: _trayHeight + 16,
+                      child: _buildTrayBackground(),
                     ),
-                  ),
 
-                  // 3. Bottom Tray visual card
-                  Positioned(
-                    left: 0,
-                    top: _trayTop - 8,
-                    right: 0,
-                    height: _trayHeight + 16,
-                    child: _buildTrayBackground(),
-                  ),
-
-
-
-                  // 4. Render snapped pieces first (bottom of stack)
+                  // 4. Render snapped pieces first (bottom of stack) — always visible
                   ..._buildPuzzlePieces(snappedOnly: true),
 
-                  // 5. Render unsnapped pieces (top of stack)
-                  ..._buildPuzzlePieces(snappedOnly: false),
+                  // 5. Render unsnapped pieces — hidden when hint is showing
+                  if (!_showHint)
+                    ..._buildPuzzlePieces(snappedOnly: false),
 
-                  // 6. Victory Overlay dialog
+                  // 6. Floating Sparkles particles overlay
+                  if (_sparkles.isNotEmpty)
+                    Positioned.fill(
+                      child: IgnorePointer(
+                        child: CustomPaint(
+                          painter: SparklePainter(_sparkles),
+                        ),
+                      ),
+                    ),
+
+                  // 7. Victory Overlay dialog
                   if (_hasWon) _buildVictoryOverlay(),
                 ],
               );
@@ -489,36 +718,11 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> {
     );
   }
 
-  Widget _buildDifficultySelector() {
-    return SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      physics: const BouncingScrollPhysics(),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            _buildDiffButton('2x2', 2),
-            const SizedBox(width: 6),
-            _buildDiffButton('3x3', 3),
-            const SizedBox(width: 6),
-            _buildDiffButton('4x4', 4),
-            const SizedBox(width: 6),
-            _buildDiffButton('5x5', 5),
-            const SizedBox(width: 6),
-            _buildDiffButton('6x6', 6),
-            const SizedBox(width: 6),
-            _buildDiffButton('7x7', 7),
-            const SizedBox(width: 6),
-            _buildDiffButton('8x8', 8),
-          ],
-        ),
-      ),
-    );
-  }
-
   // Renders the transparent HUD control and status card
   Widget _buildHeaderHUD() {
+    final correctCount = _pieces.where((p) => p.isSnapped && p.currentGridRow == p.row && p.currentGridCol == p.col).length;
+    final progressPercent = _pieces.isEmpty ? 0 : ((correctCount / _pieces.length) * 100).toInt();
+
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
@@ -537,38 +741,23 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> {
           },
         ),
 
-        // Countdown Timer in Center (if enabled)
-        if (widget.timer != null && widget.timer! > 0)
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-            decoration: BoxDecoration(
-              color: Colors.redAccent.withOpacity(0.15),
-              borderRadius: BorderRadius.circular(20),
-              border: Border.all(color: Colors.redAccent.withOpacity(0.3), width: 1),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(Icons.timer_outlined, color: Colors.redAccent, size: 16),
-                const SizedBox(width: 6),
-                Text(
-                  _formatTime(_secondsRemaining),
-                  style: const TextStyle(
-                    color: Colors.redAccent,
-                    fontSize: 14,
-                    fontWeight: FontWeight.bold,
-                    letterSpacing: 1.0,
-                  ),
-                ),
-              ],
-            ),
-          )
-        else
-          const Spacer(),
+        // Center spacer
+        const Spacer(),
 
         // Action buttons
         Row(
           children: [
+            // Percentage Progress Indicator in white54
+            Text(
+              '$progressPercent%',
+              style: const TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: Colors.white54,
+                letterSpacing: 0.5,
+              ),
+            ),
+            const SizedBox(width: 8),
             IconButton(
               icon: Icon(
                 _showHint ? Icons.visibility : Icons.visibility_off,
@@ -592,31 +781,48 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> {
     );
   }
 
-  // Individual difficulty selector button
-  Widget _buildDiffButton(String text, int size) {
-    final isActive = (_rows == size);
-    return InkWell(
-      onTap: () => _setDifficulty(size),
-      borderRadius: BorderRadius.circular(8),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-        decoration: BoxDecoration(
-          color: isActive ? Colors.cyanAccent.withOpacity(0.15) : Colors.transparent,
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(
-            color: isActive ? Colors.cyanAccent : Colors.white.withOpacity(0.1),
-            width: 1,
-          ),
+  // Info row: grid size on left, countdown timer on right
+  Widget _buildInfoRow() {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        // Grid size (left) — no background, no border
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.grid_view_rounded, color: Colors.cyanAccent, size: 14),
+            const SizedBox(width: 6),
+            Text(
+              '${_rows}x$_cols',
+              style: const TextStyle(
+                color: Colors.cyanAccent,
+                fontSize: 13,
+                fontWeight: FontWeight.bold,
+                letterSpacing: 0.8,
+              ),
+            ),
+          ],
         ),
-        child: Text(
-          text,
-          style: TextStyle(
-            fontSize: 12,
-            fontWeight: FontWeight.bold,
-            color: isActive ? Colors.cyanAccent : Colors.white70,
+
+        // Countdown timer (right) — only shown when timer is set, no background, no border
+        if (widget.timer != null && widget.timer! > 0)
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.timer_outlined, color: Colors.redAccent, size: 14),
+              const SizedBox(width: 6),
+              Text(
+                _formatTime(_secondsRemaining),
+                style: const TextStyle(
+                  color: Colors.redAccent,
+                  fontSize: 13,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 1.0,
+                ),
+              ),
+            ],
           ),
-        ),
-      ),
+      ],
     );
   }
 
@@ -730,15 +936,21 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> {
           top: piece.currentPosition.dy,
           child: GestureDetector(
             onPanStart: (details) {
-              if (piece.isSnapped || _isGameOver || _hasWon) return;
+              if (_isGameOver || _hasWon) return;
               _isScrollingTray = false;
-              _isDraggingPiece = false;
               setState(() {
                 _activeDraggingIndex = i;
+                if (piece.isSnapped) {
+                  piece.isSnapped = false;
+                  piece.currentGridRow = null;
+                  piece.currentGridCol = null;
+                  _isDraggingPiece = true;
+                } else {
+                  _isDraggingPiece = false;
+                }
               });
             },
             onPanUpdate: (details) {
-              if (piece.isSnapped) return;
               if (!_isScrollingTray && !_isDraggingPiece) {
                 final dx = details.delta.dx.abs();
                 final dy = details.delta.dy.abs();
@@ -765,7 +977,6 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> {
               }
             },
             onPanEnd: (details) {
-              if (piece.isSnapped) return;
               final wasDragging = _isDraggingPiece;
               setState(() {
                 _activeDraggingIndex = null;
@@ -1304,7 +1515,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           child: ClipRRect(
                             borderRadius: BorderRadius.circular(12),
                             child: Image.asset(
-                              'assets/puzzle.png',
+                              'assets/logo.jpeg',
                               fit: BoxFit.cover,
                               errorBuilder: (context, error, stackTrace) {
                                 return Container(
@@ -1324,7 +1535,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               const Text(
-                                "Gain Puzzle",
+                                "Top Puzzle",
                                 style: TextStyle(
                                   fontSize: 24,
                                   fontWeight: FontWeight.w900,
@@ -1795,9 +2006,12 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
   }
 
   void _navigateToGame() {
+    final user = FirebaseAuth.instance.currentUser;
+    final nextScreen = user != null ? const HomeScreen() : const LoginScreen();
+
     Navigator.of(context).pushReplacement(
       PageRouteBuilder(
-        pageBuilder: (context, animation, secondaryAnimation) => const HomeScreen(),
+        pageBuilder: (context, animation, secondaryAnimation) => nextScreen,
         transitionsBuilder: (context, animation, secondaryAnimation, child) {
           return FadeTransition(
             opacity: animation,
@@ -1871,7 +2085,7 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(26),
                     child: Image.asset(
-                      'assets/icon.jpeg',
+                      'assets/logo.jpeg',
                       fit: BoxFit.cover,
                       errorBuilder: (context, error, stackTrace) {
                         return Container(
@@ -1960,11 +2174,295 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
   }
 }
 
+class LoginScreen extends StatefulWidget {
+  const LoginScreen({super.key});
+
+  @override
+  State<LoginScreen> createState() => _LoginScreenState();
+}
+
+class _LoginScreenState extends State<LoginScreen> {
+  bool _isLoading = false;
+
+  Future<void> _handleGoogleSignIn() async {
+    setState(() {
+      _isLoading = true;
+    });
+
+    try {
+      final GoogleSignIn googleSignIn = GoogleSignIn();
+      final GoogleSignInAccount? googleUser = await googleSignIn.signIn();
+
+      if (googleUser != null) {
+        final GoogleSignInAuthentication googleAuth = await googleUser.authentication;
+        final AuthCredential credential = GoogleAuthProvider.credential(
+          accessToken: googleAuth.accessToken,
+          idToken: googleAuth.idToken,
+        );
+
+        final UserCredential userCredential =
+            await FirebaseAuth.instance.signInWithCredential(credential);
+        final User? user = userCredential.user;
+
+        if (user != null) {
+          // Save or merge user details in Firestore
+          await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
+            'uid': user.uid,
+            'name': user.displayName ?? '',
+            'email': user.email ?? '',
+            'photoUrl': user.photoURL ?? '',
+            'lastLogin': FieldValue.serverTimestamp(),
+          }, SetOptions(merge: true));
+
+          if (mounted) {
+            _navigateToHome();
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('Google Sign-In failed: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Sign-in failed: $e'),
+            backgroundColor: Colors.redAccent,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    }
+  }
+
+  void _navigateToHome() {
+    Navigator.of(context).pushReplacement(
+      PageRouteBuilder(
+        pageBuilder: (context, animation, secondaryAnimation) => const HomeScreen(),
+        transitionsBuilder: (context, animation, secondaryAnimation, child) {
+          return FadeTransition(
+            opacity: animation,
+            child: child,
+          );
+        },
+        transitionDuration: const Duration(milliseconds: 400),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFF0F172A),
+      body: Stack(
+        children: [
+          // Background Glow effect
+          Positioned(
+            top: -100,
+            left: -100,
+            child: Container(
+              width: 300,
+              height: 300,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: Colors.cyanAccent.withOpacity(0.04),
+              ),
+            ),
+          ),
+          Positioned(
+            bottom: -50,
+            right: -50,
+            child: Container(
+              width: 250,
+              height: 250,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: Colors.cyanAccent.withOpacity(0.02),
+              ),
+            ),
+          ),
+
+          // Main Layout
+          SafeArea(
+            child: Center(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.symmetric(horizontal: 32.0),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    // Premium Jigsaw Logo
+                    Container(
+                      width: 120,
+                      height: 120,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF1E293B),
+                        borderRadius: BorderRadius.circular(24),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.cyanAccent.withOpacity(0.2),
+                            blurRadius: 30,
+                            spreadRadius: 2,
+                          ),
+                        ],
+                        border: Border.all(
+                          color: Colors.cyanAccent.withOpacity(0.4),
+                          width: 2,
+                        ),
+                      ),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(22),
+                        child: Image.asset(
+                          'assets/logo.jpeg',
+                          fit: BoxFit.cover,
+                          errorBuilder: (context, error, stackTrace) {
+                            return const Icon(
+                              Icons.extension_rounded,
+                              size: 64,
+                              color: Colors.cyanAccent,
+                            );
+                          },
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 32),
+
+                    // App Title
+                    const Text(
+                      'Top Puzzle',
+                      style: TextStyle(
+                        fontSize: 32,
+                        fontWeight: FontWeight.w900,
+                        color: Colors.white,
+                        letterSpacing: 2.0,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+
+                    // Slogan
+                    Text(
+                      'Solve Custom Puzzles & Earn Rewards',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 14,
+                        color: Colors.white.withOpacity(0.6),
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                    const SizedBox(height: 48),
+
+                    // Action Buttons / Loading Indicator
+                    if (_isLoading)
+                      const Center(
+                        child: CircularProgressIndicator(
+                          valueColor: AlwaysStoppedAnimation<Color>(Colors.cyanAccent),
+                        ),
+                      )
+                    else ...[
+                      // Google Sign-In Button
+                      GestureDetector(
+                        onTap: _handleGoogleSignIn,
+                        child: Container(
+                          height: 54,
+                          decoration: BoxDecoration(
+                            gradient: const LinearGradient(
+                              colors: [Color(0xFF1E293B), Color(0xFF0F172A)],
+                              begin: Alignment.topLeft,
+                              end: Alignment.bottomRight,
+                            ),
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(
+                              color: Colors.cyanAccent.withOpacity(0.3),
+                              width: 1.5,
+                            ),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.cyanAccent.withOpacity(0.1),
+                                blurRadius: 10,
+                                offset: const Offset(0, 4),
+                              ),
+                            ],
+                          ),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              // Simplified Premium Google G-Icon
+                              Container(
+                                width: 24,
+                                height: 24,
+                                decoration: const BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  color: Colors.white,
+                                ),
+                                alignment: Alignment.center,
+                                child: const Text(
+                                  'G',
+                                  style: TextStyle(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.black,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 16),
+                              const Text(
+                                'Sign In with Google',
+                                style: TextStyle(
+                                  fontSize: 15,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.white,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 20),
+
+                      // Skip Button
+                      TextButton(
+                        onPressed: _navigateToHome,
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              'Skip for now',
+                              style: TextStyle(
+                                fontSize: 14,
+                                color: Colors.white.withOpacity(0.5),
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            Icon(
+                              Icons.arrow_forward_rounded,
+                              size: 16,
+                              color: Colors.white.withOpacity(0.5),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
 
   @override
   Widget build(BuildContext context) {
+    final user = FirebaseAuth.instance.currentUser;
+
     return Scaffold(
       backgroundColor: const Color(0xFF0F172A),
       appBar: AppBar(
@@ -1995,6 +2493,12 @@ class SettingsScreen extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
+                // User Profile Card / Guest Card
+                if (user != null)
+                  _buildProfileCard(user)
+                else
+                  _buildGuestCard(context),
+
                 const SizedBox(height: 16),
                 _buildSettingsCard(
                   context: context,
@@ -2025,7 +2529,7 @@ class SettingsScreen extends StatelessWidget {
                       scheme: 'mailto',
                       path: 'puzzle0798@gmail.com',
                       queryParameters: {
-                        'subject': 'Gain Puzzle Help & Support',
+                        'subject': 'Top Puzzle Help & Support',
                       },
                     );
                     if (await canLaunchUrl(emailUri)) {
@@ -2047,12 +2551,33 @@ class SettingsScreen extends StatelessWidget {
                   title: 'Share App',
                   icon: Icons.share_rounded,
                   onTap: () {
-                    Share.share('Check out Gain Puzzle, the ultimate custom jigsaw puzzle game app! Download and start solving puzzles: https://play.google.com/store/apps/details?id=com.quick.puzzleapp');
+                    Share.share('Check out Top Puzzle, the ultimate custom jigsaw puzzle game app! Download and start solving puzzles: https://play.google.com/store/apps/details?id=com.quick.puzzleapp');
                   },
                 ),
+
+                // Log Out Option
+                if (user != null) ...[
+                  const SizedBox(height: 16),
+                  _buildSettingsCard(
+                    context: context,
+                    title: 'Log Out',
+                    icon: Icons.logout_rounded,
+                    onTap: () async {
+                      await FirebaseAuth.instance.signOut();
+                      await GoogleSignIn().signOut();
+                      if (context.mounted) {
+                        Navigator.of(context).pushAndRemoveUntil(
+                          MaterialPageRoute(builder: (context) => const LoginScreen()),
+                          (route) => false,
+                        );
+                      }
+                    },
+                  ),
+                ],
+
                 const Spacer(),
                 Text(
-                  'Gain Puzzle v1.0.0',
+                  'Top Puzzle v1.0.0',
                   textAlign: TextAlign.center,
                   style: TextStyle(
                     fontSize: 12,
@@ -2064,6 +2589,161 @@ class SettingsScreen extends StatelessWidget {
             ),
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildProfileCard(User user) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1E293B).withOpacity(0.6),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: Colors.cyanAccent.withOpacity(0.2), width: 1.5),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.cyanAccent.withOpacity(0.05),
+            blurRadius: 15,
+            spreadRadius: 2,
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 52,
+            height: 52,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              border: Border.all(color: Colors.cyanAccent, width: 2),
+            ),
+            child: ClipOval(
+              child: user.photoURL != null && user.photoURL!.isNotEmpty
+                  ? CachedNetworkImage(
+                      imageUrl: user.photoURL!,
+                      fit: BoxFit.cover,
+                      placeholder: (context, url) => const CircularProgressIndicator(
+                        valueColor: AlwaysStoppedAnimation<Color>(Colors.cyanAccent),
+                      ),
+                      errorWidget: (context, url, error) => const Icon(Icons.person, color: Colors.cyanAccent, size: 28),
+                    )
+                  : const Icon(Icons.person, color: Colors.cyanAccent, size: 28),
+            ),
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  user.displayName ?? 'Jigsaw Player',
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.white,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  user.email ?? '',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Colors.white.withOpacity(0.5),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildGuestCard(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1E293B).withOpacity(0.6),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: Colors.amberAccent.withOpacity(0.15), width: 1.5),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.15),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 48,
+                height: 48,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: Colors.amberAccent.withOpacity(0.1),
+                ),
+                child: const Icon(Icons.account_circle_outlined, color: Colors.amberAccent, size: 28),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Guest Player',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      'Sign in to save rewards & sync progress',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: Colors.white.withOpacity(0.5),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.of(context).pushAndRemoveUntil(
+                MaterialPageRoute(builder: (context) => const LoginScreen()),
+                (route) => false,
+              );
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.amberAccent,
+              foregroundColor: Colors.black,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+              padding: const EdgeInsets.symmetric(vertical: 10),
+              elevation: 0,
+            ),
+            child: const Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.login_rounded, size: 16),
+                SizedBox(width: 8),
+                Text(
+                  'Sign In with Google',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
