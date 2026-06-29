@@ -9,6 +9,7 @@ import 'package:google_sign_in/google_sign_in.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -92,6 +93,27 @@ class JigsawPieceModel {
     this.currentGridRow,
     this.currentGridCol,
   });
+}
+
+class PuzzleCache {
+  static String _getKey(String? userId, String puzzleId) {
+    final uId = (userId == null || userId.isEmpty) ? 'guest' : userId;
+    return 'puzzle_status_${uId}_$puzzleId';
+  }
+
+  static Future<void> setStatus(String puzzleId, String status) async {
+    if (puzzleId.isEmpty) return;
+    final user = FirebaseAuth.instance.currentUser;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_getKey(user?.uid, puzzleId), status);
+  }
+
+  static Future<String?> getStatus(String puzzleId) async {
+    if (puzzleId.isEmpty) return null;
+    final user = FirebaseAuth.instance.currentUser;
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(_getKey(user?.uid, puzzleId));
+  }
 }
 
 class SparkleParticle {
@@ -295,6 +317,7 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
     if (widget.puzzleId != null && widget.puzzleId!.isNotEmpty) {
       final user = FirebaseAuth.instance.currentUser;
       final userId = user?.uid ?? 'guest';
+      PuzzleCache.setStatus(widget.puzzleId!, 'failed');
       try {
         await FirebaseFirestore.instance.collection('puzzle_failed_attempts').add({
           'userId': userId,
@@ -568,16 +591,18 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
     setState(() {
       _hasWon = false;
       _recordSaved = false;
-      _startTime = DateTime.now();
       _trayScrollOffset = 0.0;
       _generateAndShufflePieces();
-      _startTimerIfNeeded();
     });
   }
 
   Future<void> _saveSolverRecord() async {
     if (_recordSaved) return;
     _recordSaved = true;
+
+    if (widget.puzzleId != null && widget.puzzleId!.isNotEmpty) {
+      PuzzleCache.setStatus(widget.puzzleId!, 'solved');
+    }
 
     int timeTaken = 0;
     if (widget.timer != null && widget.timer! > 0) {
@@ -1522,6 +1547,88 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   int _currentTabIndex = 0;
+  Map<String, String> _localStatusMap = {};
+  StreamSubscription? _solversSub;
+  StreamSubscription? _failedSub;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadLocalStatuses();
+    _syncFirestoreStatuses();
+  }
+
+  @override
+  void dispose() {
+    _solversSub?.cancel();
+    _failedSub?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _loadLocalStatuses() async {
+    final user = FirebaseAuth.instance.currentUser;
+    final userId = user?.uid ?? 'guest';
+    final prefs = await SharedPreferences.getInstance();
+    final keys = prefs.getKeys();
+    final Map<String, String> map = {};
+    final prefix = 'puzzle_status_${userId}_';
+    for (String key in keys) {
+      if (key.startsWith(prefix)) {
+        final puzzleId = key.substring(prefix.length);
+        final status = prefs.getString(key);
+        if (status != null) {
+          map[puzzleId] = status;
+        }
+      }
+    }
+    if (mounted) {
+      setState(() {
+        _localStatusMap = map;
+      });
+    }
+  }
+
+  void _updateLocalStatus(String puzzleId, String status) {
+    if (_localStatusMap[puzzleId] != status) {
+      setState(() {
+        _localStatusMap[puzzleId] = status;
+      });
+      PuzzleCache.setStatus(puzzleId, status);
+    }
+  }
+
+  void _syncFirestoreStatuses() {
+    final user = FirebaseAuth.instance.currentUser;
+    final userId = user?.uid ?? 'guest';
+
+    _solversSub = FirebaseFirestore.instance
+        .collection('puzzle_solvers')
+        .where('userId', isEqualTo: userId)
+        .snapshots()
+        .listen((snapshot) {
+      for (var doc in snapshot.docs) {
+        final pid = doc.data()['puzzleId'] as String?;
+        if (pid != null && pid.isNotEmpty) {
+          _updateLocalStatus(pid, 'solved');
+        }
+      }
+    });
+
+    _failedSub = FirebaseFirestore.instance
+        .collection('puzzle_failed_attempts')
+        .where('userId', isEqualTo: userId)
+        .snapshots()
+        .listen((snapshot) {
+      for (var doc in snapshot.docs) {
+        final pid = doc.data()['puzzleId'] as String?;
+        if (pid != null && pid.isNotEmpty) {
+          if (_localStatusMap[pid] == null) {
+            _updateLocalStatus(pid, 'failed');
+          }
+        }
+      }
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -2390,6 +2497,10 @@ class _HomeScreenState extends State<HomeScreen> {
     int? rows,
     int? cols,
   }) {
+    final status = puzzleId != null ? _localStatusMap[puzzleId] : null;
+    final bool isFailed = status == 'failed';
+    final bool isSolved = status == 'solved';
+
     return Container(
       decoration: BoxDecoration(
         color: const Color(0xFF1E293B),
@@ -2404,41 +2515,76 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(20),
-        child: InkWell(
-          onTap: () => _navigateToGame(
-            puzzleId: puzzleId,
-            imageUrl: imageUrl,
-            link: link,
-            timer: timer,
-            reward: reward,
-            initialRows: rows,
-            initialCols: cols,
-          ),
-          child: Hero(
-            tag: imageUrl,
-            child: CachedNetworkImage(
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: () => _navigateToGame(
+              puzzleId: puzzleId,
               imageUrl: imageUrl,
-              fit: BoxFit.cover,
-              placeholder: (context, url) => Center(
-                child: SizedBox(
-                  width: 24,
-                  height: 24,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    valueColor: AlwaysStoppedAnimation<Color>(
-                      Colors.cyanAccent.withOpacity(0.5),
+              link: link,
+              timer: timer,
+              reward: reward,
+              initialRows: rows,
+              initialCols: cols,
+            ),
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                Opacity(
+                  opacity: isFailed ? 0.45 : 1.0,
+                  child: Hero(
+                    tag: imageUrl,
+                    child: CachedNetworkImage(
+                      imageUrl: imageUrl,
+                      fit: BoxFit.cover,
+                      placeholder: (context, url) => Center(
+                        child: SizedBox(
+                          width: 24,
+                          height: 24,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            valueColor: AlwaysStoppedAnimation<Color>(
+                              Colors.cyanAccent.withOpacity(0.5),
+                            ),
+                          ),
+                        ),
+                      ),
+                      errorWidget: (context, url, error) => Container(
+                        color: const Color(0xFF0F172A),
+                        child: const Icon(
+                          Icons.broken_image_rounded,
+                          color: Colors.cyanAccent,
+                          size: 32,
+                        ),
+                      ),
                     ),
                   ),
                 ),
-              ),
-              errorWidget: (context, url, error) => Container(
-                color: const Color(0xFF0F172A),
-                child: const Icon(
-                  Icons.broken_image_rounded,
-                  color: Colors.cyanAccent,
-                  size: 32,
-                ),
-              ),
+                if (isSolved || isFailed)
+                  Positioned(
+                    top: 8,
+                    right: 8,
+                    child: Container(
+                      padding: const EdgeInsets.all(4),
+                      decoration: BoxDecoration(
+                        color: isSolved ? Colors.greenAccent : Colors.redAccent,
+                        shape: BoxShape.circle,
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withOpacity(0.3),
+                            blurRadius: 4,
+                            offset: const Offset(0, 2),
+                          ),
+                        ],
+                      ),
+                      child: Icon(
+                        isSolved ? Icons.check_rounded : Icons.close_rounded,
+                        color: Colors.white,
+                        size: 16,
+                      ),
+                    ),
+                  ),
+              ],
             ),
           ),
         ),
@@ -2554,65 +2700,49 @@ class _HomeScreenState extends State<HomeScreen> {
     int? initialCols,
   }) async {
     if (puzzleId != null && puzzleId.isNotEmpty) {
-      final user = FirebaseAuth.instance.currentUser;
-      final userId = user?.uid ?? 'guest';
+      String? cachedStatus = _localStatusMap[puzzleId];
+      cachedStatus ??= await PuzzleCache.getStatus(puzzleId);
 
-      try {
-        final failedQuery = await FirebaseFirestore.instance
-            .collection('puzzle_failed_attempts')
-            .where('userId', isEqualTo: userId)
-            .where('puzzleId', isEqualTo: puzzleId)
-            .get();
-
-        final solvedQuery = await FirebaseFirestore.instance
-            .collection('puzzle_solvers')
-            .where('userId', isEqualTo: userId)
-            .where('puzzleId', isEqualTo: puzzleId)
-            .get();
-
-        if (failedQuery.docs.isNotEmpty || solvedQuery.docs.isNotEmpty) {
-          if (!mounted) return;
-          final bool isCompleted = solvedQuery.docs.isNotEmpty;
-          showDialog(
-            context: context,
-            builder: (context) => AlertDialog(
-              backgroundColor: const Color(0xFF1E293B),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-              title: Row(
-                children: [
-                  Icon(
-                    isCompleted ? Icons.check_circle_rounded : Icons.lock_clock_rounded,
-                    color: isCompleted ? Colors.greenAccent : Colors.redAccent,
-                    size: 28,
-                  ),
-                  const SizedBox(width: 10),
-                  Text(
-                    isCompleted ? "Puzzle Completed" : "Attempt Blocked",
-                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 18),
-                  ),
-                ],
-              ),
-              content: Text(
-                isCompleted
-                    ? "You have already successfully solved this puzzle! Only 1 completed attempt is allowed."
-                    : "You failed this puzzle within the given time limit. Secondary attempts are restricted!",
-                style: const TextStyle(color: Colors.white70, fontSize: 14),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.of(context).pop(),
-                  child: const Text(
-                    "OK",
-                    style: TextStyle(color: Colors.cyanAccent, fontWeight: FontWeight.bold),
-                  ),
+      if (cachedStatus != null) {
+        if (!mounted) return;
+        final bool isCompleted = cachedStatus == 'solved';
+        showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            backgroundColor: const Color(0xFF1E293B),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+            title: Row(
+              children: [
+                Icon(
+                  isCompleted ? Icons.check_circle_rounded : Icons.lock_clock_rounded,
+                  color: isCompleted ? Colors.greenAccent : Colors.redAccent,
+                  size: 28,
+                ),
+                const SizedBox(width: 10),
+                Text(
+                  isCompleted ? "Puzzle Completed" : "Attempt Blocked",
+                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 18),
                 ),
               ],
             ),
-          );
-          return;
-        }
-      } catch (e) {
-        debugPrint('Error checking attempt status: $e');
+            content: Text(
+              isCompleted
+                  ? "You have already successfully solved this puzzle! Only 1 completed attempt is allowed."
+                  : "You failed this puzzle within the given time limit. Secondary attempts are restricted!",
+              style: const TextStyle(color: Colors.white70, fontSize: 14),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text(
+                  "OK",
+                  style: TextStyle(color: Colors.cyanAccent, fontWeight: FontWeight.bold),
+                ),
+              ),
+            ],
+          ),
+        );
+        return;
       }
     }
 
@@ -2805,12 +2935,22 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
                       
                       // Percentage Text
                       Text(
-                        '$percent%',
+                        '$percent% Loading...',
                         style: const TextStyle(
                           fontSize: 16,
                           fontWeight: FontWeight.w900,
                           color: Colors.cyanAccent,
                           letterSpacing: 1.0,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        'Sharp your mind',
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w500,
+                          color: Colors.white.withOpacity(0.6),
+                          letterSpacing: 1.2,
                         ),
                       ),
                     ],
@@ -3138,8 +3278,282 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 }
 
-class SettingsScreen extends StatelessWidget {
+class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
+
+  @override
+  State<SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends State<SettingsScreen> {
+  String? _mobileNumber;
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchUserProfile();
+  }
+
+  Future<void> _fetchUserProfile() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user != null) {
+      try {
+        final doc = await FirebaseFirestore.instance.collection('users').doc(user.uid).get();
+        if (doc.exists && mounted) {
+          setState(() {
+            _mobileNumber = doc.data()?['mobile'] as String?;
+          });
+        }
+      } catch (e) {
+        debugPrint('Error fetching user profile: $e');
+      }
+    }
+  }
+
+  void _showEditProfileDialog(User user) {
+    final nameController = TextEditingController(text: user.displayName ?? '');
+    final mobileController = TextEditingController(text: _mobileNumber ?? '');
+    bool isSaving = false;
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            return Padding(
+              padding: EdgeInsets.only(
+                bottom: MediaQuery.of(context).viewInsets.bottom,
+              ),
+              child: Container(
+                padding: const EdgeInsets.all(24),
+                decoration: const BoxDecoration(
+                  color: Color(0xFF1E293B),
+                  borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+                  border: Border(top: BorderSide(color: Colors.cyanAccent, width: 1.5)),
+                ),
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Center(
+                        child: Container(
+                          width: 40,
+                          height: 4,
+                          decoration: BoxDecoration(
+                            color: Colors.white24,
+                            borderRadius: BorderRadius.circular(2),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      const Row(
+                        children: [
+                          Icon(Icons.edit_note_rounded, color: Colors.cyanAccent, size: 28),
+                          SizedBox(width: 10),
+                          Text(
+                            "Edit Profile",
+                            style: TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white,
+                              letterSpacing: 0.5,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 20),
+
+                      // 1. Profile Picture (Uneditable)
+                      Center(
+                        child: Stack(
+                          children: [
+                            Container(
+                              width: 80,
+                              height: 80,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                border: Border.all(color: Colors.white24, width: 2),
+                              ),
+                              child: ClipOval(
+                                child: user.photoURL != null && user.photoURL!.isNotEmpty
+                                    ? CachedNetworkImage(
+                                        imageUrl: user.photoURL!,
+                                        fit: BoxFit.cover,
+                                        errorWidget: (context, url, error) => const Icon(Icons.person, color: Colors.cyanAccent, size: 40),
+                                      )
+                                    : const Icon(Icons.person, color: Colors.cyanAccent, size: 40),
+                              ),
+                            ),
+                            Positioned(
+                              bottom: 0,
+                              right: 0,
+                              child: Container(
+                                padding: const EdgeInsets.all(4),
+                                decoration: const BoxDecoration(
+                                  color: Color(0xFF0F172A),
+                                  shape: BoxShape.circle,
+                                ),
+                                child: const Icon(Icons.lock_rounded, color: Colors.amberAccent, size: 16),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      const Center(
+                        child: Text(
+                          "Profile picture is uneditable",
+                          style: TextStyle(fontSize: 11, color: Colors.white38),
+                        ),
+                      ),
+                      const SizedBox(height: 20),
+
+                      // 2. Email (Uneditable)
+                      const Text("Email (Uneditable)", style: TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 6),
+                      TextField(
+                        controller: TextEditingController(text: user.email ?? 'No Email'),
+                        enabled: false,
+                        style: const TextStyle(color: Colors.white54, fontSize: 14),
+                        decoration: InputDecoration(
+                          prefixIcon: const Icon(Icons.email_rounded, color: Colors.white38, size: 20),
+                          suffixIcon: const Icon(Icons.lock_outline_rounded, color: Colors.amberAccent, size: 18),
+                          filled: true,
+                          fillColor: const Color(0xFF0F172A),
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                          disabledBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide: BorderSide(color: Colors.white.withOpacity(0.08)),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+
+                      // 3. Name (Editable)
+                      const Text("Full Name", style: TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 6),
+                      TextField(
+                        controller: nameController,
+                        style: const TextStyle(color: Colors.white, fontSize: 14),
+                        decoration: InputDecoration(
+                          prefixIcon: const Icon(Icons.person_rounded, color: Colors.cyanAccent, size: 20),
+                          hintText: "Enter your name",
+                          hintStyle: const TextStyle(color: Colors.white38),
+                          filled: true,
+                          fillColor: const Color(0xFF0F172A),
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                          enabledBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide: BorderSide(color: Colors.white.withOpacity(0.1)),
+                          ),
+                          focusedBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide: const BorderSide(color: Colors.cyanAccent),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+
+                      // 4. Mobile Number (Editable)
+                      const Text("Mobile Number", style: TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 6),
+                      TextField(
+                        controller: mobileController,
+                        keyboardType: TextInputType.phone,
+                        style: const TextStyle(color: Colors.white, fontSize: 14),
+                        decoration: InputDecoration(
+                          prefixIcon: const Icon(Icons.phone_rounded, color: Colors.cyanAccent, size: 20),
+                          hintText: "Enter mobile number",
+                          hintStyle: const TextStyle(color: Colors.white38),
+                          filled: true,
+                          fillColor: const Color(0xFF0F172A),
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                          enabledBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide: BorderSide(color: Colors.white.withOpacity(0.1)),
+                          ),
+                          focusedBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide: const BorderSide(color: Colors.cyanAccent),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 24),
+
+                      // Save Button
+                      ElevatedButton(
+                        onPressed: isSaving
+                            ? null
+                            : () async {
+                                final newName = nameController.text.trim();
+                                final newMobile = mobileController.text.trim();
+
+                                final messenger = ScaffoldMessenger.of(context);
+                                final nav = Navigator.of(context);
+
+                                setModalState(() {
+                                  isSaving = true;
+                                });
+
+                                try {
+                                  if (newName.isNotEmpty) {
+                                    await user.updateDisplayName(newName);
+                                  }
+
+                                  await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
+                                    'name': newName,
+                                    'mobile': newMobile,
+                                  }, SetOptions(merge: true));
+
+                                  if (mounted) {
+                                    setState(() {
+                                      _mobileNumber = newMobile;
+                                    });
+                                  }
+
+                                  nav.pop();
+                                  messenger.showSnackBar(
+                                    const SnackBar(
+                                      content: Text("Profile updated successfully!"),
+                                      backgroundColor: Colors.greenAccent,
+                                    ),
+                                  );
+                                } catch (e) {
+                                  debugPrint('Failed to save profile: $e');
+                                  setModalState(() {
+                                    isSaving = false;
+                                  });
+                                }
+                              },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.cyanAccent,
+                          foregroundColor: Colors.black,
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          elevation: 0,
+                        ),
+                        child: isSaving
+                            ? const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(strokeWidth: 2, valueColor: AlwaysStoppedAnimation<Color>(Colors.black)),
+                              )
+                            : const Text("SAVE PROFILE", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, letterSpacing: 0.5)),
+                      ),
+                      const SizedBox(height: 12),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -3182,6 +3596,16 @@ class SettingsScreen extends StatelessWidget {
                   _buildGuestCard(context),
 
                 const SizedBox(height: 26),
+
+                if (user != null) ...[
+                  _buildSettingsCard(
+                    context: context,
+                    title: 'Edit Profile',
+                    icon: Icons.edit_note_rounded,
+                    onTap: () => _showEditProfileDialog(user),
+                  ),
+                  const SizedBox(height: 16),
+                ],
                 _buildSettingsCard(
                   context: context,
                   title: 'Privacy Policy',
@@ -3209,7 +3633,7 @@ class SettingsScreen extends StatelessWidget {
                   onTap: () async {
                     final emailUri = Uri(
                       scheme: 'mailto',
-                      path: 'puzzle0798@gmail.com',
+                      path: 'puzzletime805@gmail.com',
                       queryParameters: {
                         'subject': 'Top Puzzle Help & Support',
                       },
@@ -3221,7 +3645,7 @@ class SettingsScreen extends StatelessWidget {
                         _showContentDialog(
                           context,
                           'Help & Support',
-                          'For help and support, please contact us at:\n\npuzzle0798@gmail.com\n\n(We could not open your email application automatically.)',
+                          'For help and support, please contact us at:\n\npuzzletime805@gmail.com\n\n(We could not open your email application automatically.)',
                         );
                       }
                     }
@@ -3326,6 +3750,24 @@ class SettingsScreen extends StatelessWidget {
               color: Colors.white.withOpacity(0.6),
             ),
           ),
+          if (_mobileNumber != null && _mobileNumber!.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.phone_rounded, size: 12, color: Colors.cyanAccent),
+                const SizedBox(width: 4),
+                Text(
+                  _mobileNumber!,
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: Colors.cyanAccent.withOpacity(0.9),
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
+            ),
+          ],
         ],
       ),
     );
