@@ -130,6 +130,7 @@ class SparklePainter extends CustomPainter {
 }
 
 class JigsawGameScreen extends StatefulWidget {
+  final String? puzzleId;
   final String imageUrl;
   final String? link;
   final int? timer;
@@ -139,6 +140,7 @@ class JigsawGameScreen extends StatefulWidget {
 
   const JigsawGameScreen({
     super.key,
+    this.puzzleId,
     required this.imageUrl,
     this.link,
     this.timer,
@@ -173,12 +175,16 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
   // Active pieces
   List<JigsawPieceModel> _pieces = [];
   int? _activeDraggingIndex;
+  int? _dragSourceRow;
+  int? _dragSourceCol;
   bool _isScrollingTray = false;
   bool _isDraggingPiece = false;
 
   Timer? _countdownTimer;
   int _secondsRemaining = 0;
   bool _isGameOver = false;
+  DateTime? _startTime;
+  bool _recordSaved = false;
 
   // Sparkle Particles
   final List<SparkleParticle> _sparkles = [];
@@ -187,6 +193,7 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
   @override
   void initState() {
     super.initState();
+    _startTime = DateTime.now();
     _rows = widget.initialRows ?? 3;
     _cols = widget.initialCols ?? 3;
     _startTimerIfNeeded();
@@ -284,7 +291,25 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
     return "$minutes:${seconds.toString().padLeft(2, '0')}";
   }
 
+  Future<void> _saveFailedAttemptRecord() async {
+    if (widget.puzzleId != null && widget.puzzleId!.isNotEmpty) {
+      final user = FirebaseAuth.instance.currentUser;
+      final userId = user?.uid ?? 'guest';
+      try {
+        await FirebaseFirestore.instance.collection('puzzle_failed_attempts').add({
+          'userId': userId,
+          'puzzleId': widget.puzzleId,
+          'failedAt': FieldValue.serverTimestamp(),
+        });
+      } catch (e) {
+        debugPrint('Error saving failed attempt: $e');
+      }
+    }
+  }
+
   void _showGameOverDialog() {
+    _saveFailedAttemptRecord();
+
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -314,37 +339,26 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
                 ),
                 const SizedBox(height: 8),
                 const Text(
-                  "Time limit reached! Don't give up, try again.",
+                  "Time limit reached! Secondary attempts are restricted for this puzzle.",
                   textAlign: TextAlign.center,
                   style: TextStyle(color: Colors.white70),
                 ),
                 const SizedBox(height: 24),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [
-                    TextButton(
-                      onPressed: () {
-                        Navigator.of(context).pop(); // pop dialog
-                        Navigator.of(context).pop(); // return to home
-                      },
-                      child: const Text(
-                        "EXIT",
-                        style: TextStyle(color: Colors.white54, fontWeight: FontWeight.bold),
-                      ),
-                    ),
-                    ElevatedButton(
-                      onPressed: () {
-                        Navigator.of(context).pop(); // pop dialog
-                        _resetPuzzle();
-                      },
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.redAccent,
-                        foregroundColor: Colors.white,
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                      ),
-                      child: const Text("TRY AGAIN"),
-                    ),
-                  ],
+                ElevatedButton(
+                  onPressed: () {
+                    Navigator.of(context).pop(); // pop dialog
+                    Navigator.of(context).pop(); // return to home
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.redAccent,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                  child: const Text(
+                    "BACK TO HOME",
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
                 ),
               ],
             ),
@@ -456,24 +470,22 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
     final w = _boardSize / _cols;
     final h = _boardSize / _rows;
 
-    // Find the closest unoccupied grid cell on the board
+    final pieceCenterX = piece.currentPosition.dx + (w * 1.4) / 2;
+    final pieceCenterY = piece.currentPosition.dy + (h * 1.4) / 2;
+
+    // Find the closest grid cell on the board (whether occupied or not)
     int? targetR;
     int? targetC;
     double minDistance = double.infinity;
 
     for (int r = 0; r < _rows; r++) {
       for (int c = 0; c < _cols; c++) {
-        final isOccupied = _pieces.any((p) =>
-            p.isSnapped &&
-            p != piece &&
-            p.currentGridRow == r &&
-            p.currentGridCol == c);
-
-        if (isOccupied) continue;
-
-        final cellLeft = _boardLeft + c * w - 0.20 * w;
-        final cellTop = _boardTop + r * h - 0.20 * h;
-        final distance = (piece.currentPosition - Offset(cellLeft, cellTop)).distance;
+        final cellCenterX = _boardLeft + c * w + w / 2;
+        final cellCenterY = _boardTop + r * h + h / 2;
+        final distance = math.sqrt(
+          math.pow(pieceCenterX - cellCenterX, 2) +
+          math.pow(pieceCenterY - cellCenterY, 2),
+        );
 
         if (distance < minDistance) {
           minDistance = distance;
@@ -484,8 +496,33 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
     }
 
     setState(() {
-      // Snap threshold: 35.0 pixels to closest cell
-      if (targetR != null && targetC != null && minDistance < 35.0) {
+      // Dynamic snap threshold based on grid cell size
+      final snapThreshold = math.max(w, h) * 0.85;
+      if (targetR != null && targetC != null && minDistance < snapThreshold) {
+        // Handle swapping / replacement if target cell is already occupied
+        final occupiedIndex = _pieces.indexWhere((p) =>
+            p.isSnapped &&
+            p != piece &&
+            p.currentGridRow == targetR &&
+            p.currentGridCol == targetC);
+
+        if (occupiedIndex != -1) {
+          final otherPiece = _pieces[occupiedIndex];
+          if (_dragSourceRow != null && _dragSourceCol != null) {
+            // Swap positions: move otherPiece into piece's previous board slot
+            otherPiece.currentGridRow = _dragSourceRow;
+            otherPiece.currentGridCol = _dragSourceCol;
+            final otherLeft = _boardLeft + _dragSourceCol! * w - 0.20 * w;
+            final otherTop = _boardTop + _dragSourceRow! * h - 0.20 * h;
+            otherPiece.currentPosition = Offset(otherLeft, otherTop);
+          } else {
+            // Evict otherPiece back to the bottom tray
+            otherPiece.isSnapped = false;
+            otherPiece.currentGridRow = null;
+            otherPiece.currentGridCol = null;
+          }
+        }
+
         final cellLeft = _boardLeft + targetC * w - 0.20 * w;
         final cellTop = _boardTop + targetR * h - 0.20 * h;
 
@@ -511,15 +548,18 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
 
         if (allSnapped && allCorrect) {
           _hasWon = true;
+          _saveSolverRecord();
         }
       } else {
         // Return to its tray slot position
         piece.isSnapped = false;
         piece.currentGridRow = null;
         piece.currentGridCol = null;
-        _organizeTrayPieces();
       }
+      _organizeTrayPieces();
       _activeDraggingIndex = null;
+      _dragSourceRow = null;
+      _dragSourceCol = null;
     });
   }
 
@@ -527,10 +567,41 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
   void _resetPuzzle() {
     setState(() {
       _hasWon = false;
+      _recordSaved = false;
+      _startTime = DateTime.now();
       _trayScrollOffset = 0.0;
       _generateAndShufflePieces();
       _startTimerIfNeeded();
     });
+  }
+
+  Future<void> _saveSolverRecord() async {
+    if (_recordSaved) return;
+    _recordSaved = true;
+
+    int timeTaken = 0;
+    if (widget.timer != null && widget.timer! > 0) {
+      timeTaken = (widget.timer! - _secondsRemaining).clamp(0, widget.timer!);
+    } else if (_startTime != null) {
+      timeTaken = DateTime.now().difference(_startTime!).inSeconds;
+    }
+
+    final user = FirebaseAuth.instance.currentUser;
+    try {
+      await FirebaseFirestore.instance.collection('puzzle_solvers').add({
+        'puzzleId': widget.puzzleId ?? '',
+        'imageUrl': widget.imageUrl,
+        'userId': user?.uid ?? 'guest',
+        'userName': user?.displayName ?? (user == null ? 'Guest Player' : 'User'),
+        'userEmail': user?.email ?? '',
+        'userPhoto': user?.photoURL ?? '',
+        'timeTaken': timeTaken,
+        'givenTimer': widget.timer ?? 0,
+        'completedAt': FieldValue.serverTimestamp(),
+      });
+    } catch (e) {
+      debugPrint('Failed to save solver record: $e');
+    }
   }
 
 
@@ -690,12 +761,8 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
                       child: _buildTrayBackground(),
                     ),
 
-                  // 4. Render snapped pieces first (bottom of stack) — always visible
-                  ..._buildPuzzlePieces(snappedOnly: true),
-
-                  // 5. Render unsnapped pieces — hidden when hint is showing
-                  if (!_showHint)
-                    ..._buildPuzzlePieces(snappedOnly: false),
+                  // 4. Render puzzle pieces with proper Z-ordering and key stability
+                  ..._buildPuzzlePieces(),
 
                   // 6. Floating Sparkles particles overlay
                   if (_sparkles.isNotEmpty)
@@ -909,7 +976,7 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
     );
   }
   // Dynamic stack of Jigsaw Pieces
-  List<Widget> _buildPuzzlePieces({required bool snappedOnly}) {
+  List<Widget> _buildPuzzlePieces() {
     final w = _boardSize / _cols;
     final h = _boardSize / _rows;
     final boardPw = w * 1.4;
@@ -919,12 +986,36 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
     const drawerPw = 75.0;
     const drawerPh = 75.0;
 
+    final List<int> sortedIndices = [];
+
+    // 1. Snapped non-dragging pieces (bottom layer)
+    for (int i = 0; i < _pieces.length; i++) {
+      if (_pieces[i].isSnapped && _activeDraggingIndex != i) {
+        sortedIndices.add(i);
+      }
+    }
+
+    // 2. Unsnapped non-dragging pieces (middle layer, hidden if hint active)
+    if (!_showHint) {
+      for (int i = 0; i < _pieces.length; i++) {
+        if (!_pieces[i].isSnapped && _activeDraggingIndex != i) {
+          sortedIndices.add(i);
+        }
+      }
+    }
+
+    // 3. Actively dragging piece (topmost layer)
+    if (_activeDraggingIndex != null && _activeDraggingIndex! >= 0 && _activeDraggingIndex! < _pieces.length) {
+      final draggingPiece = _pieces[_activeDraggingIndex!];
+      if (!_showHint || draggingPiece.isSnapped || _isDraggingPiece) {
+        sortedIndices.add(_activeDraggingIndex!);
+      }
+    }
+
     final List<Widget> list = [];
 
-    for (int i = 0; i < _pieces.length; i++) {
+    for (final i in sortedIndices) {
       final piece = _pieces[i];
-      if (piece.isSnapped != snappedOnly) continue;
-
       final isDraggingThis = _isDraggingPiece && _activeDraggingIndex == i;
       final pw = (piece.isSnapped || isDraggingThis) ? boardPw : drawerPw;
       final ph = (piece.isSnapped || isDraggingThis) ? boardPh : drawerPh;
@@ -932,6 +1023,7 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
 
       list.add(
         Positioned(
+          key: ValueKey('jigsaw_piece_${piece.row}_${piece.col}'),
           left: piece.currentPosition.dx,
           top: piece.currentPosition.dy,
           child: GestureDetector(
@@ -940,6 +1032,8 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
               _isScrollingTray = false;
               setState(() {
                 _activeDraggingIndex = i;
+                _dragSourceRow = piece.currentGridRow;
+                _dragSourceCol = piece.currentGridCol;
                 if (piece.isSnapped) {
                   piece.isSnapped = false;
                   piece.currentGridRow = null;
@@ -1146,7 +1240,7 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
                 ],
                 const SizedBox(height: 24),
                 ElevatedButton.icon(
-                  onPressed: _resetPuzzle,
+                  onPressed: () => Navigator.of(context).pop(),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.cyanAccent,
                     foregroundColor: const Color(0xFF0F172A),
@@ -1156,8 +1250,8 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
                     ),
                     textStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
                   ),
-                  icon: const Icon(Icons.replay),
-                  label: const Text('PLAY AGAIN'),
+                  icon: const Icon(Icons.home_rounded),
+                  label: const Text('BACK TO HOME'),
                 ),
               ],
             ),
@@ -1629,6 +1723,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         }
 
                         return _buildPuzzleCard(
+                          puzzleId: doc.id,
                           imageUrl: imageUrl,
                           fileName: fileName,
                           uploadDateStr: uploadDateStr,
@@ -1661,48 +1756,368 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       ),
       child: SafeArea(
-        child: Center(
-          child: Padding(
-            padding: const EdgeInsets.all(24.0),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(20),
-                  decoration: BoxDecoration(
-                    color: Colors.cyanAccent.withOpacity(0.05),
-                    shape: BoxShape.circle,
-                    border: Border.all(color: Colors.cyanAccent.withOpacity(0.15), width: 1.5),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Winners Header
+            Padding(
+              padding: const EdgeInsets.fromLTRB(24, 24, 24, 16),
+              child: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: Colors.amberAccent.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.amberAccent.withOpacity(0.2)),
+                    ),
+                    child: const Icon(
+                      Icons.emoji_events_rounded,
+                      color: Colors.amberAccent,
+                      size: 24,
+                    ),
                   ),
-                  child: const Icon(
-                    Icons.emoji_events_rounded,
-                    color: Colors.cyanAccent,
-                    size: 48,
+                  const SizedBox(width: 14),
+                  const Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        "Winners Leaderboard",
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white,
+                          letterSpacing: 0.5,
+                        ),
+                      ),
+                      SizedBox(height: 2),
+                      Text(
+                        "Today's top players who completed puzzles",
+                        style: TextStyle(
+                          color: Colors.white54,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
                   ),
-                ),
-                const SizedBox(height: 24),
-                const Text(
-                  "Winners Leaderboard",
-                  style: TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.white,
-                    letterSpacing: 0.5,
-                  ),
-                ),
-                const SizedBox(height: 12),
-                Text(
-                  "Coming soon! The top puzzle solvers and prize winners will be listed here.",
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    color: Colors.white.withOpacity(0.5),
-                    fontSize: 14,
-                    height: 1.5,
-                  ),
-                ),
-              ],
+                ],
+              ),
             ),
-          ),
+
+            // StreamBuilder for puzzle_images and puzzle_solvers collection
+            Expanded(
+              child: StreamBuilder<QuerySnapshot>(
+                stream: FirebaseFirestore.instance
+                    .collection('puzzle_images')
+                    .snapshots(),
+                builder: (context, puzzleSnapshot) {
+                  final puzzleDocs = puzzleSnapshot.data?.docs ?? [];
+                  final Map<String, Map<String, dynamic>> puzzleMap = {};
+                  for (var doc in puzzleDocs) {
+                    puzzleMap[doc.id] = doc.data() as Map<String, dynamic>;
+                  }
+
+                  return StreamBuilder<QuerySnapshot>(
+                    stream: FirebaseFirestore.instance
+                        .collection('puzzle_solvers')
+                        .snapshots(),
+                    builder: (context, snapshot) {
+                      if (snapshot.hasError) {
+                        return Center(
+                          child: Text(
+                            "Error loading winners: ${snapshot.error}",
+                            style: const TextStyle(color: Colors.white54),
+                          ),
+                        );
+                      }
+
+                      if (snapshot.connectionState == ConnectionState.waiting) {
+                        return const Center(
+                          child: CircularProgressIndicator(
+                            valueColor: AlwaysStoppedAnimation<Color>(Colors.cyanAccent),
+                          ),
+                        );
+                      }
+
+                      final docs = snapshot.data?.docs ?? [];
+
+                      final now = DateTime.now();
+                      final todayDocs = docs.where((doc) {
+                        final data = doc.data() as Map<String, dynamic>;
+                        final timestamp = data['completedAt'] as Timestamp?;
+                        if (timestamp == null) return false;
+                        final date = timestamp.toDate();
+                        return date.year == now.year && date.month == now.month && date.day == now.day;
+                      }).toList();
+
+                      if (todayDocs.isEmpty) {
+                        return Center(
+                          child: Padding(
+                            padding: const EdgeInsets.all(24.0),
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Container(
+                                  padding: const EdgeInsets.all(20),
+                                  decoration: BoxDecoration(
+                                    color: Colors.amberAccent.withOpacity(0.05),
+                                    shape: BoxShape.circle,
+                                    border: Border.all(color: Colors.amberAccent.withOpacity(0.15), width: 1.5),
+                                  ),
+                                  child: const Icon(
+                                    Icons.emoji_events_rounded,
+                                    color: Colors.amberAccent,
+                                    size: 48,
+                                  ),
+                                ),
+                                const SizedBox(height: 24),
+                                const Text(
+                                  "No Winners Today",
+                                  style: TextStyle(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                                const SizedBox(height: 8),
+                                const Text(
+                                  "Be the first to complete a puzzle today and claim your spot on the leaderboard!",
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(color: Colors.white54, fontSize: 13),
+                                ),
+                              ],
+                            ),
+                          ),
+                        );
+                      }
+
+                      // Sort locally by timeTaken ascending (fastest solvers first)
+                      final sortedDocs = List<QueryDocumentSnapshot>.from(todayDocs);
+                      sortedDocs.sort((a, b) {
+                        final dataA = a.data() as Map<String, dynamic>;
+                        final dataB = b.data() as Map<String, dynamic>;
+                        final timeA = dataA['timeTaken'] as int? ?? 0;
+                        final timeB = dataB['timeTaken'] as int? ?? 0;
+                        return timeA.compareTo(timeB);
+                      });
+
+                      return ListView.builder(
+                        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+                        itemCount: sortedDocs.length,
+                        itemBuilder: (context, index) {
+                          final data = sortedDocs[index].data() as Map<String, dynamic>;
+                          final rawName = data['userName'] as String? ?? 'Guest Player';
+                          final firstName = rawName.trim().split(' ').first;
+                          final userPhoto = data['userPhoto'] as String? ?? '';
+                          final timeTaken = data['timeTaken'] as int? ?? 0;
+                          final puzzleId = data['puzzleId'] as String? ?? '';
+                          final solverImageUrl = data['imageUrl'] as String? ?? '';
+
+                          final puzzleInfo = puzzleMap[puzzleId];
+                          final puzzleTitle = puzzleInfo?['fileName'] as String? ?? 'Solved Puzzle';
+                          final puzzleImageUrl = puzzleInfo?['url'] as String? ?? solverImageUrl;
+
+                          final mins = timeTaken ~/ 60;
+                          final secs = timeTaken % 60;
+                          final timeStr = mins > 0 ? '${mins}m ${secs}s' : '${secs}s';
+
+                          // Rank styling
+                          Widget rankWidget;
+                          if (index == 0) {
+                            rankWidget = const Text("🥇", style: TextStyle(fontSize: 18));
+                          } else if (index == 1) {
+                            rankWidget = const Text("🥈", style: TextStyle(fontSize: 18));
+                          } else if (index == 2) {
+                            rankWidget = const Text("🥉", style: TextStyle(fontSize: 18));
+                          } else {
+                            rankWidget = Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: Colors.white.withOpacity(0.08),
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: Text(
+                                "#${index + 1}",
+                                style: const TextStyle(
+                                  color: Colors.white70,
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 11,
+                                ),
+                              ),
+                            );
+                          }
+
+                          return Container(
+                            margin: const EdgeInsets.only(bottom: 12),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF1E293B),
+                              borderRadius: BorderRadius.circular(16),
+                              border: Border.all(
+                                color: index < 3
+                                    ? Colors.amberAccent.withOpacity(0.3)
+                                    : Colors.white.withOpacity(0.08),
+                                width: index < 3 ? 1.5 : 1,
+                              ),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.black.withOpacity(0.15),
+                                  blurRadius: 8,
+                                  offset: const Offset(0, 3),
+                                ),
+                              ],
+                            ),
+                            child: Material(
+                              color: Colors.transparent,
+                              borderRadius: BorderRadius.circular(16),
+                              child: InkWell(
+                                borderRadius: BorderRadius.circular(16),
+                                onTap: () {
+                                  if (puzzleId.isNotEmpty) {
+                                    _navigateToGame(
+                                      puzzleId: puzzleId,
+                                      imageUrl: puzzleImageUrl,
+                                      link: puzzleInfo?['link'] as String?,
+                                      timer: puzzleInfo?['timer'] as int?,
+                                      reward: puzzleInfo?['reward'] as String?,
+                                      initialRows: puzzleInfo?['rows'] as int?,
+                                      initialCols: puzzleInfo?['cols'] as int?,
+                                    );
+                                  }
+                                },
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                                  child: Row(
+                                    children: [
+                                      CircleAvatar(
+                                        radius: 20,
+                                        backgroundColor: Colors.cyanAccent.withOpacity(0.1),
+                                        backgroundImage: userPhoto.isNotEmpty ? NetworkImage(userPhoto) : null,
+                                        child: userPhoto.isEmpty
+                                            ? const Icon(Icons.person, color: Colors.cyanAccent, size: 20)
+                                            : null,
+                                      ),
+                                      const SizedBox(width: 12),
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            Row(
+                                              mainAxisSize: MainAxisSize.min,
+                                              children: [
+                                                Flexible(
+                                                  child: Text(
+                                                    firstName,
+                                                    maxLines: 1,
+                                                    overflow: TextOverflow.ellipsis,
+                                                    style: const TextStyle(
+                                                      fontWeight: FontWeight.bold,
+                                                      color: Colors.white,
+                                                      fontSize: 15,
+                                                    ),
+                                                  ),
+                                                ),
+                                                const SizedBox(width: 6),
+                                                const Text(
+                                                  "•",
+                                                  style: TextStyle(
+                                                    color: Colors.white54,
+                                                    fontSize: 14,
+                                                    fontWeight: FontWeight.bold,
+                                                  ),
+                                                ),
+                                                const SizedBox(width: 6),
+                                                rankWidget,
+                                              ],
+                                            ),
+                                            const SizedBox(height: 4),
+                                            Row(
+                                              children: [
+                                                if (puzzleImageUrl.isNotEmpty) ...[
+                                                  ClipRRect(
+                                                    borderRadius: BorderRadius.circular(4),
+                                                    child: CachedNetworkImage(
+                                                      imageUrl: puzzleImageUrl,
+                                                      width: 18,
+                                                      height: 18,
+                                                      fit: BoxFit.cover,
+                                                      errorWidget: (context, url, error) => const Icon(Icons.extension, size: 14, color: Colors.amberAccent),
+                                                    ),
+                                                  ),
+                                                  const SizedBox(width: 6),
+                                                ],
+                                                Expanded(
+                                                  child: Text(
+                                                    puzzleTitle,
+                                                    maxLines: 1,
+                                                    overflow: TextOverflow.ellipsis,
+                                                    style: const TextStyle(
+                                                      fontSize: 12,
+                                                      color: Colors.amberAccent,
+                                                      fontWeight: FontWeight.w600,
+                                                    ),
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Column(
+                                        crossAxisAlignment: CrossAxisAlignment.end,
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Container(
+                                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                            decoration: BoxDecoration(
+                                              color: Colors.cyanAccent.withOpacity(0.1),
+                                              borderRadius: BorderRadius.circular(8),
+                                              border: Border.all(color: Colors.cyanAccent.withOpacity(0.2)),
+                                            ),
+                                            child: Row(
+                                              mainAxisSize: MainAxisSize.min,
+                                              children: [
+                                                const Icon(Icons.timer_outlined, size: 12, color: Colors.cyanAccent),
+                                                const SizedBox(width: 4),
+                                                Text(
+                                                  timeStr,
+                                                  style: const TextStyle(
+                                                    fontWeight: FontWeight.bold,
+                                                    fontSize: 12,
+                                                    color: Colors.cyanAccent,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                          const SizedBox(height: 4),
+                                          const Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              Text(
+                                                "Play",
+                                                style: TextStyle(fontSize: 10, color: Colors.white38, fontWeight: FontWeight.bold),
+                                              ),
+                                              Icon(Icons.chevron_right_rounded, size: 14, color: Colors.white38),
+                                            ],
+                                          ),
+                                        ],
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
+                          );
+                        },
+                      );
+                    },
+                  );
+                },
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -1718,54 +2133,254 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       ),
       child: SafeArea(
-        child: Center(
-          child: Padding(
-            padding: const EdgeInsets.all(24.0),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(20),
-                  decoration: BoxDecoration(
-                    color: Colors.cyanAccent.withOpacity(0.05),
-                    shape: BoxShape.circle,
-                    border: Border.all(color: Colors.cyanAccent.withOpacity(0.15), width: 1.5),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Offerwall Header
+            Padding(
+              padding: const EdgeInsets.fromLTRB(24, 24, 24, 16),
+              child: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: Colors.cyanAccent.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.cyanAccent.withOpacity(0.2)),
+                    ),
+                    child: const Icon(
+                      Icons.local_offer_rounded,
+                      color: Colors.cyanAccent,
+                      size: 24,
+                    ),
                   ),
-                  child: const Icon(
-                    Icons.local_offer_rounded,
-                    color: Colors.cyanAccent,
-                    size: 48,
+                  const SizedBox(width: 14),
+                  const Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        "Offerwall",
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white,
+                          letterSpacing: 0.5,
+                        ),
+                      ),
+                      SizedBox(height: 2),
+                      Text(
+                        "Check out special offerwall links",
+                        style: TextStyle(
+                          color: Colors.white54,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
                   ),
-                ),
-                const SizedBox(height: 24),
-                const Text(
-                  "Offerwall Tasks",
-                  style: TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.white,
-                    letterSpacing: 0.5,
-                  ),
-                ),
-                const SizedBox(height: 12),
-                Text(
-                  "Coming soon! Complete custom offers and tasks to win special rewards.",
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    color: Colors.white.withOpacity(0.5),
-                    fontSize: 14,
-                    height: 1.5,
-                  ),
-                ),
-              ],
+                ],
+              ),
             ),
-          ),
+
+            // StreamBuilder for text_links collection
+            Expanded(
+              child: StreamBuilder<QuerySnapshot>(
+                stream: FirebaseFirestore.instance
+                    .collection('text_links')
+                    .orderBy('uploadedAt', descending: true)
+                    .snapshots(),
+                builder: (context, snapshot) {
+                  if (snapshot.hasError) {
+                    return Center(
+                      child: Text(
+                        "Error loading offers: ${snapshot.error}",
+                        style: const TextStyle(color: Colors.white54),
+                      ),
+                    );
+                  }
+
+                  if (snapshot.connectionState == ConnectionState.waiting) {
+                    return const Center(
+                      child: CircularProgressIndicator(
+                        valueColor: AlwaysStoppedAnimation<Color>(Colors.cyanAccent),
+                      ),
+                    );
+                  }
+
+                  final docs = snapshot.data?.docs ?? [];
+
+                  if (docs.isEmpty) {
+                    return Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(24.0),
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.all(20),
+                              decoration: BoxDecoration(
+                                color: Colors.cyanAccent.withOpacity(0.05),
+                                shape: BoxShape.circle,
+                                border: Border.all(color: Colors.cyanAccent.withOpacity(0.15), width: 1.5),
+                              ),
+                              child: const Icon(
+                                Icons.local_offer_rounded,
+                                color: Colors.cyanAccent,
+                                size: 48,
+                              ),
+                            ),
+                            const SizedBox(height: 24),
+                            const Text(
+                              "No Offers Available",
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.white,
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            const Text(
+                              "Check back later for new offerwall links!",
+                              textAlign: TextAlign.center,
+                              style: TextStyle(color: Colors.white54, fontSize: 13),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  }
+
+                  return ListView.builder(
+                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+                    itemCount: docs.length,
+                    itemBuilder: (context, index) {
+                      final data = docs[index].data() as Map<String, dynamic>;
+                      final textVal = data['text'] as String? ?? 'Special Offer';
+                      final linkVal = data['link'] as String? ?? '';
+                      final timestamp = data['uploadedAt'] as Timestamp?;
+                      final dateStr = timestamp != null
+                          ? "${timestamp.toDate().day}/${timestamp.toDate().month}/${timestamp.toDate().year}"
+                          : "Recently";
+
+                      return Container(
+                        margin: const EdgeInsets.only(bottom: 14),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF1E293B),
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(
+                            color: Colors.cyanAccent.withOpacity(0.15),
+                            width: 1,
+                          ),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withOpacity(0.2),
+                              blurRadius: 10,
+                              offset: const Offset(0, 4),
+                            ),
+                          ],
+                        ),
+                        child: Padding(
+                          padding: const EdgeInsets.all(16.0),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      textVal,
+                                      style: const TextStyle(
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.bold,
+                                        color: Colors.white,
+                                        height: 1.3,
+                                      ),
+                                    ),
+                                  ),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                    decoration: BoxDecoration(
+                                      color: Colors.cyanAccent.withOpacity(0.1),
+                                      borderRadius: BorderRadius.circular(6),
+                                    ),
+                                    child: Text(
+                                      dateStr,
+                                      style: const TextStyle(
+                                        fontSize: 10,
+                                        color: Colors.cyanAccent,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              if (linkVal.isNotEmpty) ...[
+                                const SizedBox(height: 12),
+                                InkWell(
+                                  onTap: () async {
+                                    final uri = Uri.parse(linkVal);
+                                    if (await canLaunchUrl(uri)) {
+                                      await launchUrl(uri, mode: LaunchMode.externalApplication);
+                                    } else {
+                                      if (context.mounted) {
+                                        ScaffoldMessenger.of(context).showSnackBar(
+                                          SnackBar(
+                                            content: Text('Could not launch: $linkVal'),
+                                            backgroundColor: Colors.redAccent,
+                                          ),
+                                        );
+                                      }
+                                    }
+                                  },
+                                  borderRadius: BorderRadius.circular(10),
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFF0F172A),
+                                      borderRadius: BorderRadius.circular(10),
+                                      border: Border.all(color: Colors.white10),
+                                    ),
+                                    child: Row(
+                                      children: [
+                                        const Icon(Icons.link_rounded, size: 18, color: Colors.cyanAccent),
+                                        const SizedBox(width: 8),
+                                        Expanded(
+                                          child: Text(
+                                            linkVal,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: const TextStyle(
+                                              fontSize: 13,
+                                              color: Colors.cyanAccent,
+                                              fontWeight: FontWeight.w500,
+                                              decoration: TextDecoration.underline,
+                                            ),
+                                          ),
+                                        ),
+                                        const SizedBox(width: 6),
+                                        const Icon(Icons.open_in_new_rounded, size: 16, color: Colors.white54),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                  );
+                },
+              ),
+            ),
+          ],
         ),
       ),
     );
   }
 
   Widget _buildPuzzleCard({
+    String? puzzleId,
     required String imageUrl,
     required String fileName,
     required String uploadDateStr,
@@ -1791,6 +2406,7 @@ class _HomeScreenState extends State<HomeScreen> {
         borderRadius: BorderRadius.circular(20),
         child: InkWell(
           onTap: () => _navigateToGame(
+            puzzleId: puzzleId,
             imageUrl: imageUrl,
             link: link,
             timer: timer,
@@ -1928,17 +2544,83 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  void _navigateToGame({
+  Future<void> _navigateToGame({
+    String? puzzleId,
     required String imageUrl,
     String? link,
     int? timer,
     String? reward,
     int? initialRows,
     int? initialCols,
-  }) {
+  }) async {
+    if (puzzleId != null && puzzleId.isNotEmpty) {
+      final user = FirebaseAuth.instance.currentUser;
+      final userId = user?.uid ?? 'guest';
+
+      try {
+        final failedQuery = await FirebaseFirestore.instance
+            .collection('puzzle_failed_attempts')
+            .where('userId', isEqualTo: userId)
+            .where('puzzleId', isEqualTo: puzzleId)
+            .get();
+
+        final solvedQuery = await FirebaseFirestore.instance
+            .collection('puzzle_solvers')
+            .where('userId', isEqualTo: userId)
+            .where('puzzleId', isEqualTo: puzzleId)
+            .get();
+
+        if (failedQuery.docs.isNotEmpty || solvedQuery.docs.isNotEmpty) {
+          if (!mounted) return;
+          final bool isCompleted = solvedQuery.docs.isNotEmpty;
+          showDialog(
+            context: context,
+            builder: (context) => AlertDialog(
+              backgroundColor: const Color(0xFF1E293B),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+              title: Row(
+                children: [
+                  Icon(
+                    isCompleted ? Icons.check_circle_rounded : Icons.lock_clock_rounded,
+                    color: isCompleted ? Colors.greenAccent : Colors.redAccent,
+                    size: 28,
+                  ),
+                  const SizedBox(width: 10),
+                  Text(
+                    isCompleted ? "Puzzle Completed" : "Attempt Blocked",
+                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 18),
+                  ),
+                ],
+              ),
+              content: Text(
+                isCompleted
+                    ? "You have already successfully solved this puzzle! Only 1 completed attempt is allowed."
+                    : "You failed this puzzle within the given time limit. Secondary attempts are restricted!",
+                style: const TextStyle(color: Colors.white70, fontSize: 14),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text(
+                    "OK",
+                    style: TextStyle(color: Colors.cyanAccent, fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ],
+            ),
+          );
+          return;
+        }
+      } catch (e) {
+        debugPrint('Error checking attempt status: $e');
+      }
+    }
+
+    if (!mounted) return;
     Navigator.of(context).push(
       PageRouteBuilder(
         pageBuilder: (context, animation, secondaryAnimation) => JigsawGameScreen(
+          puzzleId: puzzleId,
           imageUrl: imageUrl,
           link: link,
           timer: timer,
@@ -2469,15 +3151,15 @@ class SettingsScreen extends StatelessWidget {
         backgroundColor: Colors.transparent,
         elevation: 0,
         title: const Text(
-          'SETTINGS',
+          'Settings',
           style: TextStyle(
             fontSize: 18,
             fontWeight: FontWeight.w900,
-            letterSpacing: 2.0,
+            letterSpacing: 1.0,
             color: Colors.white,
           ),
         ),
-        centerTitle: true,
+        centerTitle: false,
       ),
       body: Container(
         decoration: const BoxDecoration(
@@ -2499,7 +3181,7 @@ class SettingsScreen extends StatelessWidget {
                 else
                   _buildGuestCard(context),
 
-                const SizedBox(height: 16),
+                const SizedBox(height: 26),
                 _buildSettingsCard(
                   context: context,
                   title: 'Privacy Policy',
@@ -2594,28 +3276,23 @@ class SettingsScreen extends StatelessWidget {
   }
 
   Widget _buildProfileCard(User user) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: const Color(0xFF1E293B).withOpacity(0.6),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: Colors.cyanAccent.withOpacity(0.2), width: 1.5),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.cyanAccent.withOpacity(0.05),
-            blurRadius: 15,
-            spreadRadius: 2,
-          ),
-        ],
-      ),
-      child: Row(
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8.0),
+      child: Column(
         children: [
           Container(
-            width: 52,
-            height: 52,
+            width: 76,
+            height: 76,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
-              border: Border.all(color: Colors.cyanAccent, width: 2),
+              border: Border.all(color: Colors.cyanAccent, width: 2.5),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.cyanAccent.withOpacity(0.2),
+                  blurRadius: 15,
+                  spreadRadius: 2,
+                ),
+              ],
             ),
             child: ClipOval(
               child: user.photoURL != null && user.photoURL!.isNotEmpty
@@ -2625,33 +3302,28 @@ class SettingsScreen extends StatelessWidget {
                       placeholder: (context, url) => const CircularProgressIndicator(
                         valueColor: AlwaysStoppedAnimation<Color>(Colors.cyanAccent),
                       ),
-                      errorWidget: (context, url, error) => const Icon(Icons.person, color: Colors.cyanAccent, size: 28),
+                      errorWidget: (context, url, error) => const Icon(Icons.person, color: Colors.cyanAccent, size: 36),
                     )
-                  : const Icon(Icons.person, color: Colors.cyanAccent, size: 28),
+                  : const Icon(Icons.person, color: Colors.cyanAccent, size: 36),
             ),
           ),
-          const SizedBox(width: 16),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  user.displayName ?? 'Jigsaw Player',
-                  style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.white,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  user.email ?? '',
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: Colors.white.withOpacity(0.5),
-                  ),
-                ),
-              ],
+          const SizedBox(height: 12),
+          Text(
+            user.displayName ?? 'Player',
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+              color: Colors.white,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            user.email ?? '',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: 13,
+              color: Colors.white.withOpacity(0.6),
             ),
           ),
         ],
