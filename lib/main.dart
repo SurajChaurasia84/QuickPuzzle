@@ -391,8 +391,6 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
     );
   }
 
-
-
   // Generates jigsaw pieces with complementary fitting edges
   void _generateAndShufflePieces() {
     final vEdges = List.generate(
@@ -437,8 +435,9 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
 
   // Arranges all unsnapped pieces in a horizontally scrolling line inside the bottom tray (fixed 75x75 slots)
   void _organizeTrayPieces() {
-    final count = _pieces.length;
-    if (count == 0) return;
+    final unsnappedPieces = _pieces.where((p) => !p.isSnapped).toList();
+    final unsnappedCount = unsnappedPieces.length;
+    if (unsnappedCount == 0) return;
 
     // Fixed drawer size (same for all difficulties)
     const drawerPw = 75.0;
@@ -447,22 +446,21 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
     final trayLeft = 48.0; // leave space for left padding
     final trayWidth = _screenWidth - 96.0;
 
-    // Clamp scroll offset to valid bounds based on total slots (all pieces)
-    final totalWidth = count * (drawerPw + 16.0);
+    // Clamp scroll offset to valid bounds based on remaining unsnapped pieces
+    final totalWidth = unsnappedCount * (drawerPw + 16.0);
     final maxScroll = math.max(0.0, totalWidth - trayWidth);
     _trayScrollOffset = _trayScrollOffset.clamp(0.0, maxScroll);
 
     setState(() {
-      for (int i = 0; i < count; i++) {
-        final piece = _pieces[i];
-        if (piece.isSnapped) continue;
-        
+      for (int slotIndex = 0; slotIndex < unsnappedCount; slotIndex++) {
+        final piece = unsnappedPieces[slotIndex];
+
         // If this piece is currently being dragged up/out, don't override its position!
         if (_isDraggingPiece && _activeDraggingIndex != null && _activeDraggingIndex! < _pieces.length && _pieces[_activeDraggingIndex!] == piece) {
           continue;
         }
 
-        final posX = trayLeft + i * (drawerPw + 16.0) - _trayScrollOffset;
+        final posX = trayLeft + slotIndex * (drawerPw + 16.0) - _trayScrollOffset;
         final posY = _trayTop + (_trayHeight - drawerPh) / 2;
 
         piece.currentPosition = Offset(posX, posY);
@@ -471,14 +469,14 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
   }
 
   void _scrollTray(double delta) {
-    final count = _pieces.length;
-    if (count == 0) return;
+    final unsnappedCount = _pieces.where((p) => !p.isSnapped).length;
+    if (unsnappedCount == 0) return;
 
     // Fixed drawer size
     const drawerPw = 75.0;
 
     final trayWidth = _screenWidth - 96.0;
-    final totalWidth = count * (drawerPw + 16.0);
+    final totalWidth = unsnappedCount * (drawerPw + 16.0);
     final maxScroll = math.max(0.0, totalWidth - trayWidth);
 
     setState(() {
@@ -3368,51 +3366,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
                       // 1. Profile Picture (Uneditable)
                       Center(
-                        child: Stack(
-                          children: [
-                            Container(
-                              width: 80,
-                              height: 80,
-                              decoration: BoxDecoration(
-                                shape: BoxShape.circle,
-                                border: Border.all(color: Colors.white24, width: 2),
-                              ),
-                              child: ClipOval(
-                                child: user.photoURL != null && user.photoURL!.isNotEmpty
-                                    ? CachedNetworkImage(
-                                        imageUrl: user.photoURL!,
-                                        fit: BoxFit.cover,
-                                        errorWidget: (context, url, error) => const Icon(Icons.person, color: Colors.cyanAccent, size: 40),
-                                      )
-                                    : const Icon(Icons.person, color: Colors.cyanAccent, size: 40),
-                              ),
-                            ),
-                            Positioned(
-                              bottom: 0,
-                              right: 0,
-                              child: Container(
-                                padding: const EdgeInsets.all(4),
-                                decoration: const BoxDecoration(
-                                  color: Color(0xFF0F172A),
-                                  shape: BoxShape.circle,
-                                ),
-                                child: const Icon(Icons.lock_rounded, color: Colors.amberAccent, size: 16),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      const Center(
-                        child: Text(
-                          "Profile picture is uneditable",
-                          style: TextStyle(fontSize: 11, color: Colors.white38),
+                        child: Container(
+                          width: 80,
+                          height: 80,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            border: Border.all(color: Colors.white24, width: 2),
+                          ),
+                          child: ClipOval(
+                            child: user.photoURL != null && user.photoURL!.isNotEmpty
+                                ? CachedNetworkImage(
+                                    imageUrl: user.photoURL!,
+                                    fit: BoxFit.cover,
+                                    errorWidget: (context, url, error) => const Icon(Icons.person, color: Colors.cyanAccent, size: 40),
+                                  )
+                                : const Icon(Icons.person, color: Colors.cyanAccent, size: 40),
+                          ),
                         ),
                       ),
                       const SizedBox(height: 20),
 
                       // 2. Email (Uneditable)
-                      const Text("Email (Uneditable)", style: TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.bold)),
+                      const Text("Email", style: TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.bold)),
                       const SizedBox(height: 6),
                       TextField(
                         controller: TextEditingController(text: user.email ?? 'No Email'),
@@ -3420,7 +3395,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         style: const TextStyle(color: Colors.white54, fontSize: 14),
                         decoration: InputDecoration(
                           prefixIcon: const Icon(Icons.email_rounded, color: Colors.white38, size: 20),
-                          suffixIcon: const Icon(Icons.lock_outline_rounded, color: Colors.amberAccent, size: 18),
                           filled: true,
                           fillColor: const Color(0xFF0F172A),
                           contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
