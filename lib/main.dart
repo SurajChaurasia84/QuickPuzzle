@@ -231,6 +231,111 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
       });
   }
 
+  int _selectedThemeIndex = 8;
+
+  bool get _isCurrentThemeLight {
+    final Color c = _jigsawThemes[_selectedThemeIndex].previewColor;
+    return ThemeData.estimateBrightnessForColor(c) == Brightness.light;
+  }
+
+  void _showThemeSelector() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1E293B),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            return Padding(
+              padding: const EdgeInsets.all(20.0),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const SizedBox(width: 48),
+                      const Text(
+                        "Change Theme",
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white,
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: () => Navigator.of(context).pop(),
+                        child: const Text(
+                          "Done",
+                          style: TextStyle(
+                            color: Colors.greenAccent,
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  GridView.builder(
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: 3,
+                      crossAxisSpacing: 12,
+                      mainAxisSpacing: 12,
+                      childAspectRatio: 1.0,
+                    ),
+                    itemCount: _jigsawThemes.length,
+                    itemBuilder: (context, index) {
+                      final isSelected = _selectedThemeIndex == index;
+                      final theme = _jigsawThemes[index];
+
+                      return GestureDetector(
+                        onTap: () {
+                          setState(() {
+                            _selectedThemeIndex = index;
+                          });
+                          setModalState(() {});
+                        },
+                        child: Container(
+                          decoration: theme.decoration.copyWith(
+                            borderRadius: BorderRadius.circular(8),
+                            border: isSelected
+                                ? Border.all(color: Colors.greenAccent, width: 2.5)
+                                : Border.all(color: Colors.white12, width: 1),
+                          ),
+                          child: isSelected
+                              ? const Stack(
+                                  children: [
+                                    Positioned(
+                                      top: 6,
+                                      right: 6,
+                                      child: Icon(
+                                        Icons.check_circle,
+                                        color: Colors.greenAccent,
+                                        size: 20,
+                                      ),
+                                    ),
+                                  ],
+                                )
+                              : null,
+                        ),
+                      );
+                    },
+                  ),
+                  const SizedBox(height: 12),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
   @override
   void dispose() {
     _countdownTimer?.cancel();
@@ -650,11 +755,11 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
         child: SafeArea(
           child: LayoutBuilder(
             builder: (context, constraints) {
-              _screenWidth = constraints.maxWidth;
-              _screenHeight = constraints.maxHeight;
+                _screenWidth = constraints.maxWidth;
+                _screenHeight = constraints.maxHeight;
 
-              // Top HUD and Bottom Tray space allocation
-              final availableHeight = _screenHeight - 120.0 - 150.0;
+                // Top HUD and Bottom Tray space allocation
+                final availableHeight = _screenHeight - 120.0 - 150.0;
               _boardSize = math.min(_screenWidth * 0.92, math.min(availableHeight, 380.0));
               _boardLeft = (_screenWidth - _boardSize) / 2;
               _boardTop = 100.0 + (availableHeight - _boardSize) / 2;
@@ -674,6 +779,19 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
               return Stack(
                 clipBehavior: Clip.none,
                 children: [
+                  // 0. Themed middle board backdrop
+                  Positioned(
+                    top: 64,
+                    bottom: 153,
+                    left: 0,
+                    right: 0,
+                    child: Container(
+                      decoration: _jigsawThemes[_selectedThemeIndex].decoration,
+                      child: CustomPaint(
+                        painter: JigsawThemePainter(_selectedThemeIndex),
+                      ),
+                    ),
+                  ),
                   // 1. HUD Top Dashboard
                   Positioned(
                     top: 16,
@@ -692,27 +810,27 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
                         child: Container(
                           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 5),
                           decoration: BoxDecoration(
-                            color: Colors.amberAccent.withOpacity(0.10),
+                            color: _isCurrentThemeLight ? Colors.amber.withOpacity(0.20) : Colors.amberAccent.withOpacity(0.10),
                             borderRadius: BorderRadius.circular(20),
-                            border: Border.all(color: Colors.amberAccent.withOpacity(0.35), width: 1),
+                            border: Border.all(color: _isCurrentThemeLight ? Colors.amber.withOpacity(0.40) : Colors.amberAccent.withOpacity(0.35), width: 1),
                           ),
                           child: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              const Icon(Icons.emoji_events_rounded, color: Colors.amberAccent, size: 15),
+                              Icon(Icons.emoji_events_rounded, color: _isCurrentThemeLight ? const Color(0xFFC2410C) : Colors.amberAccent, size: 15),
                               const SizedBox(width: 6),
-                              const Text(
+                              Text(
                                 'Reward: ',
                                 style: TextStyle(
-                                  color: Colors.white54,
+                                  color: _isCurrentThemeLight ? Colors.black87 : Colors.white54,
                                   fontSize: 12,
                                   fontWeight: FontWeight.w500,
                                 ),
                               ),
                               Text(
                                 widget.reward!,
-                                style: const TextStyle(
-                                  color: Colors.amberAccent,
+                                style: TextStyle(
+                                  color: _isCurrentThemeLight ? const Color(0xFFC2410C) : Colors.amberAccent,
                                   fontSize: 13,
                                   fontWeight: FontWeight.bold,
                                   letterSpacing: 0.5,
@@ -748,14 +866,13 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
                           child: Container(
                             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
                             decoration: BoxDecoration(
-                              color: Colors.white54.withOpacity(0.08),
+                              color: _isCurrentThemeLight ? Colors.black.withOpacity(0.06) : Colors.white54.withOpacity(0.08),
                               borderRadius: BorderRadius.circular(20),
-                              // border: Border.all(color: Colors.white54.withOpacity(0.30), width: 1),
                             ),
                             child: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                const Icon(Icons.link_rounded, color: Colors.white54, size: 14),
+                                Icon(Icons.link_rounded, color: _isCurrentThemeLight ? Colors.black87 : Colors.white54, size: 14),
                                 const SizedBox(width: 6),
                                 Flexible(
                                   child: Text(
@@ -764,8 +881,8 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
                                         : 'Visit Link',
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                      color: Colors.white54,
+                                    style: TextStyle(
+                                      color: _isCurrentThemeLight ? Colors.black87 : Colors.white54,
                                       fontSize: 12,
                                       fontWeight: FontWeight.w600,
                                       letterSpacing: 0.5,
@@ -850,7 +967,7 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
         // Action buttons
         Row(
           children: [
-            // Percentage Progress Indicator in white54
+            // Percentage Progress Indicator
             Text(
               '$progressPercent%',
               style: const TextStyle(
@@ -874,7 +991,18 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
               },
             ),
             IconButton(
-              icon: const Icon(Icons.refresh, color: Colors.cyanAccent),
+              icon: const Icon(
+                Icons.palette_outlined,
+                color: Colors.white70,
+              ),
+              tooltip: 'Change Theme',
+              onPressed: _showThemeSelector,
+            ),
+            IconButton(
+              icon: const Icon(
+                Icons.refresh,
+                color: Colors.cyanAccent,
+              ),
               tooltip: 'Reset Puzzle',
               onPressed: _resetPuzzle,
             ),
@@ -886,6 +1014,7 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
 
   // Info row: grid size on left, countdown timer on right
   Widget _buildInfoRow() {
+    final infoColor = _isCurrentThemeLight ? Colors.teal : Colors.cyanAccent;
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
@@ -893,12 +1022,12 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
         Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.grid_view_rounded, color: Colors.cyanAccent, size: 14),
+            Icon(Icons.grid_view_rounded, color: infoColor, size: 14),
             const SizedBox(width: 6),
             Text(
               '${_rows}x$_cols',
-              style: const TextStyle(
-                color: Colors.cyanAccent,
+              style: TextStyle(
+                color: infoColor,
                 fontSize: 13,
                 fontWeight: FontWeight.bold,
                 letterSpacing: 0.8,
@@ -1549,6 +1678,171 @@ class BoardGridPainter extends CustomPainter {
       oldDelegate.rows != rows || oldDelegate.cols != cols;
 }
 
+class JigsawTheme {
+  final String name;
+  final BoxDecoration decoration;
+  final Color previewColor;
+
+  const JigsawTheme({
+    required this.name,
+    required this.decoration,
+    required this.previewColor,
+  });
+}
+
+final List<JigsawTheme> _jigsawThemes = [
+  // 1. Solid Light White
+  JigsawTheme(
+    name: 'Light Slate',
+    previewColor: const Color(0xFFF1F5F9),
+    decoration: const BoxDecoration(
+      color: Color(0xFFF1F5F9),
+    ),
+  ),
+  // 2. Linen/Beige Cream
+  JigsawTheme(
+    name: 'Cream Linen',
+    previewColor: const Color(0xFFF5F5DC),
+    decoration: const BoxDecoration(
+      color: Color(0xFFFAF9F6),
+      gradient: LinearGradient(
+        colors: [Color(0xFFFAF9F6), Color(0xFFF5F5DC)],
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+      ),
+    ),
+  ),
+  // 3. Denim/Soft Blue
+  JigsawTheme(
+    name: 'Denim Blue',
+    previewColor: const Color(0xFF7E9EC5),
+    decoration: const BoxDecoration(
+      gradient: LinearGradient(
+        colors: [Color(0xFF6B8FB7), Color(0xFF4C6A92)],
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+      ),
+    ),
+  ),
+  // 4. Poker felt Green
+  JigsawTheme(
+    name: 'Felt Green',
+    previewColor: const Color(0xFF4E7E36),
+    decoration: const BoxDecoration(
+      gradient: RadialGradient(
+        colors: [Color(0xFF5D9C43), Color(0xFF385E27)],
+        radius: 1.2,
+      ),
+    ),
+  ),
+  // 5. Light Ash Wood
+  JigsawTheme(
+    name: 'Ash Wood',
+    previewColor: const Color(0xFFE2E8F0),
+    decoration: const BoxDecoration(
+      gradient: LinearGradient(
+        colors: [Color(0xFFE2E8F0), Color(0xFFCBD5E1)],
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+      ),
+    ),
+  ),
+  // 6. Mahogany Wood
+  JigsawTheme(
+    name: 'Dark Mahogany',
+    previewColor: const Color(0xFF3E2723),
+    decoration: const BoxDecoration(
+      gradient: LinearGradient(
+        colors: [Color(0xFF4E342E), Color(0xFF2D1B18)],
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+      ),
+    ),
+  ),
+  // 7. Oak Wood
+  JigsawTheme(
+    name: 'Oak Wood',
+    previewColor: const Color(0xFF8D6E63),
+    decoration: const BoxDecoration(
+      gradient: LinearGradient(
+        colors: [Color(0xFF8D6E63), Color(0xFF5D4037)],
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+      ),
+    ),
+  ),
+  // 8. Bamboo Sand
+  JigsawTheme(
+    name: 'Bamboo Sand',
+    previewColor: const Color(0xFFD7CCC8),
+    decoration: const BoxDecoration(
+      gradient: LinearGradient(
+        colors: [Color(0xFFEFEBE9), Color(0xFFD7CCC8)],
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+      ),
+    ),
+  ),
+  // 9. Navy Slate (Default Dark)
+  JigsawTheme(
+    name: 'Dark Slate',
+    previewColor: const Color(0xFF1E293B),
+    decoration: const BoxDecoration(
+      gradient: LinearGradient(
+        colors: [Color(0xFF0F172A), Color(0xFF1E293B)],
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+      ),
+    ),
+  ),
+];
+
+class JigsawThemePainter extends CustomPainter {
+  final int themeIndex;
+  JigsawThemePainter(this.themeIndex);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (themeIndex == 1 || themeIndex == 2 || themeIndex == 8) {
+      // Fabric / linen grid effect
+      final paint = Paint()
+        ..color = Colors.black.withOpacity(0.04)
+        ..strokeWidth = 1;
+      // Vertical lines
+      for (double x = 0; x < size.width; x += 4) {
+        canvas.drawLine(Offset(x, 0), Offset(x, size.height), paint);
+      }
+      // Horizontal lines
+      for (double y = 0; y < size.height; y += 4) {
+        canvas.drawLine(Offset(0, y), Offset(size.width, y), paint);
+      }
+    } else if (themeIndex == 4 || themeIndex == 5 || themeIndex == 6 || themeIndex == 7) {
+      // Wood plank lines effect (vertical lines with varied spacing)
+      final plankPaint = Paint()
+        ..color = Colors.black.withOpacity(0.12)
+        ..strokeWidth = 1.5;
+      final spacing = size.width / 8;
+      for (double x = spacing; x < size.width; x += spacing) {
+        canvas.drawLine(Offset(x, 0), Offset(x, size.height), plankPaint);
+        
+        // Add subtle wood grain vertical curves
+        final grainPaint = Paint()
+          ..color = Colors.white.withOpacity(0.03)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1;
+        final path = Path();
+        path.moveTo(x - 20, 0);
+        path.quadraticBezierTo(x - 5, size.height * 0.5, x - 25, size.height);
+        canvas.drawPath(path, grainPaint);
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant JigsawThemePainter oldDelegate) =>
+      oldDelegate.themeIndex != themeIndex;
+}
+
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
@@ -1675,12 +1969,19 @@ class _HomeScreenState extends State<HomeScreen> {
           type: BottomNavigationBarType.fixed,
           selectedItemColor: Colors.cyanAccent,
           unselectedItemColor: Colors.white38,
-          selectedLabelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
-          unselectedLabelStyle: const TextStyle(fontSize: 11),
+          selectedLabelStyle: const TextStyle(
+            fontWeight: FontWeight.bold,
+            fontSize: 11,
+            height: 1.2,
+          ),
+          unselectedLabelStyle: const TextStyle(
+            fontSize: 10,
+            height: 1.2,
+          ),
           items: const [
             BottomNavigationBarItem(
               icon: Icon(Icons.extension_rounded),
-              label: 'Reward Puzzle',
+              label: 'Reward\n Puzzle',
             ),
             BottomNavigationBarItem(
               icon: Icon(Icons.psychology_rounded),
