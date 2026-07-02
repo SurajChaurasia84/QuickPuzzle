@@ -160,6 +160,7 @@ class JigsawGameScreen extends StatefulWidget {
   final String? reward;
   final int? initialRows;
   final int? initialCols;
+  final bool isOffline;
 
   const JigsawGameScreen({
     super.key,
@@ -171,6 +172,7 @@ class JigsawGameScreen extends StatefulWidget {
     this.reward,
     this.initialRows,
     this.initialCols,
+    this.isOffline = false,
   });
 
   @override
@@ -287,6 +289,7 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
   }
 
   void _startTimerIfNeeded() {
+    if (widget.isOffline) return;
     if (widget.timer != null && widget.timer! > 0) {
       _countdownTimer?.cancel();
       _secondsRemaining = widget.timer!;
@@ -600,6 +603,8 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
     if (_recordSaved) return;
     _recordSaved = true;
 
+    if (widget.isOffline) return;
+
     if (widget.puzzleId != null && widget.puzzleId!.isNotEmpty) {
       PuzzleCache.setStatus(widget.puzzleId!, 'solved');
     }
@@ -678,7 +683,7 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
                   ),
 
                   // 2. Reward label — centered above the board
-                  if (widget.reward != null && widget.reward!.isNotEmpty)
+                  if (!widget.isOffline && widget.reward != null && widget.reward!.isNotEmpty)
                     Positioned(
                       top: _boardTop - 45,
                       left: 0,
@@ -903,7 +908,7 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
         ),
 
         // Countdown timer (right) — only shown when timer is set, no background, no border
-        if (widget.timer != null && widget.timer! > 0)
+        if (!widget.isOffline && widget.timer != null && widget.timer! > 0)
           Row(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -1224,7 +1229,7 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
                     color: Colors.white.withOpacity(0.7),
                   ),
                 ),
-                if (widget.reward != null && widget.reward!.isNotEmpty) ...[
+                if (!widget.isOffline && widget.reward != null && widget.reward!.isNotEmpty) ...[
                   const SizedBox(height: 16),
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -1644,6 +1649,7 @@ class _HomeScreenState extends State<HomeScreen> {
         index: _currentTabIndex,
         children: [
           _buildHomeTab(context),
+          _buildPracticeTab(context),
           _buildWinnersTab(),
           _buildOfferwallTab(),
           const SettingsScreen(),
@@ -1675,6 +1681,10 @@ class _HomeScreenState extends State<HomeScreen> {
             BottomNavigationBarItem(
               icon: Icon(Icons.home_rounded),
               label: 'Home',
+            ),
+            BottomNavigationBarItem(
+              icon: Icon(Icons.extension_rounded),
+              label: 'Practice',
             ),
             BottomNavigationBarItem(
               icon: Icon(Icons.emoji_events_rounded),
@@ -1861,6 +1871,175 @@ class _HomeScreenState extends State<HomeScreen> {
 ),
 );
 }
+
+  Widget _buildPracticeTab(BuildContext context) {
+    return Container(
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          colors: [Color(0xFF0F172A), Color(0xFF1E293B)],
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+        ),
+      ),
+      child: SafeArea(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Fixed Custom Title / Header
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 24.0),
+              child: Row(
+                children: [
+                  SizedBox(
+                    width: 44,
+                    height: 44,
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(12),
+                      child: Image.asset(
+                        'assets/logo.jpeg',
+                        fit: BoxFit.cover,
+                        errorBuilder: (context, error, stackTrace) {
+                          return Container(
+                            color: const Color(0xFF1E293B),
+                            child: const Icon(
+                              Icons.sports_esports_outlined,
+                              color: Colors.cyanAccent,
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          "Non Reward",
+                          style: TextStyle(
+                            fontSize: 24,
+                            fontWeight: FontWeight.w900,
+                            color: Colors.white,
+                            letterSpacing: 1.5,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          "Play fully puzzles at your own speed",
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: Colors.white.withOpacity(0.5),
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            
+            // Scrollable Content
+            Expanded(
+              child: CustomScrollView(
+                physics: const BouncingScrollPhysics(),
+                slivers: [
+                  // Firestore Stream Builder
+                  StreamBuilder<QuerySnapshot>(
+                    stream: FirebaseFirestore.instance
+                        .collection('puzzle_images')
+                        .orderBy('uploadedAt', descending: true)
+                        .snapshots(),
+                    builder: (context, snapshot) {
+                      if (snapshot.hasError) {
+                        return SliverFillRemaining(
+                          hasScrollBody: false,
+                          child: Center(
+                            child: _buildErrorWidget(snapshot.error.toString()),
+                          ),
+                        );
+                      }
+
+                      if (snapshot.connectionState == ConnectionState.waiting) {
+                        return const SliverFillRemaining(
+                          hasScrollBody: false,
+                          child: Center(
+                            child: CircularProgressIndicator(
+                              valueColor: AlwaysStoppedAnimation<Color>(Colors.cyanAccent),
+                            ),
+                          ),
+                        );
+                      }
+
+                      final docs = snapshot.data?.docs ?? [];
+                      if (docs.isEmpty) {
+                        return SliverFillRemaining(
+                          hasScrollBody: false,
+                          child: Center(
+                            child: _buildEmptyStateWidget(),
+                          ),
+                        );
+                      }
+
+                      return SliverPadding(
+                        padding: const EdgeInsets.symmetric(horizontal: 24.0),
+                        sliver: SliverGrid(
+                          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                            crossAxisCount: 2,
+                            crossAxisSpacing: 16,
+                            mainAxisSpacing: 16,
+                            childAspectRatio: 1.0,
+                          ),
+                          delegate: SliverChildBuilderDelegate(
+                            (context, index) {
+                              final doc = docs[index];
+                              final data = doc.data() as Map<String, dynamic>;
+                              final imageUrl = data['url'] as String? ?? '';
+                              final fileName = data['fileName'] as String? ?? 'Unnamed Puzzle';
+                              final String? link = data['link'] as String?;
+                              final String? linkLabel = data['linkLabel'] as String?;
+                              final int? timer = data['timer'] as int?;
+                              final String? reward = data['reward'] as String?;
+                              final int? rows = data['rows'] as int?;
+                              final int? cols = data['cols'] as int?;
+                              
+                              // Format Upload Date
+                              String uploadDateStr = 'Unknown Date';
+                              if (data['uploadedAt'] != null && data['uploadedAt'] is Timestamp) {
+                                final timestamp = data['uploadedAt'] as Timestamp;
+                                final date = timestamp.toDate();
+                                uploadDateStr = "${date.day}/${date.month}/${date.year}";
+                              }
+
+                              return _buildPuzzleCard(
+                                puzzleId: doc.id,
+                                imageUrl: imageUrl,
+                                fileName: fileName,
+                                uploadDateStr: uploadDateStr,
+                                link: link,
+                                linkLabel: linkLabel,
+                                timer: timer,
+                                reward: reward,
+                                rows: rows,
+                                cols: cols,
+                                isOffline: true,
+                              );
+                            },
+                            childCount: docs.length,
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
   Widget _buildWinnersTab() {
     return Container(
@@ -2576,8 +2755,9 @@ class _HomeScreenState extends State<HomeScreen> {
     String? reward,
     int? rows,
     int? cols,
+    bool isOffline = false,
   }) {
-    final status = puzzleId != null ? _localStatusMap[puzzleId] : null;
+    final status = !isOffline && puzzleId != null ? _localStatusMap[puzzleId] : null;
     final bool isFailed = status == 'failed';
     final bool isSolved = status == 'solved';
 
@@ -2607,6 +2787,7 @@ class _HomeScreenState extends State<HomeScreen> {
               reward: reward,
               initialRows: rows,
               initialCols: cols,
+              isOffline: isOffline,
             ),
             child: Stack(
               fit: StackFit.expand,
@@ -2771,7 +2952,7 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Future<void> _navigateToGame({
+   Future<void> _navigateToGame({
     String? puzzleId,
     required String imageUrl,
     String? link,
@@ -2780,8 +2961,9 @@ class _HomeScreenState extends State<HomeScreen> {
     String? reward,
     int? initialRows,
     int? initialCols,
+    bool isOffline = false,
   }) async {
-    if (puzzleId != null && puzzleId.isNotEmpty) {
+    if (!isOffline && puzzleId != null && puzzleId.isNotEmpty) {
       String? cachedStatus = _localStatusMap[puzzleId];
       cachedStatus ??= await PuzzleCache.getStatus(puzzleId);
 
@@ -2840,6 +3022,7 @@ class _HomeScreenState extends State<HomeScreen> {
           reward: reward,
           initialRows: initialRows,
           initialCols: initialCols,
+          isOffline: isOffline,
         ),
         transitionsBuilder: (context, animation, secondaryAnimation, child) {
           return FadeTransition(
