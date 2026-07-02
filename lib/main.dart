@@ -155,6 +155,7 @@ class JigsawGameScreen extends StatefulWidget {
   final String? puzzleId;
   final String imageUrl;
   final String? link;
+  final String? linkLabel;
   final int? timer;
   final String? reward;
   final int? initialRows;
@@ -165,6 +166,7 @@ class JigsawGameScreen extends StatefulWidget {
     this.puzzleId,
     required this.imageUrl,
     this.link,
+    this.linkLabel,
     this.timer,
     this.reward,
     this.initialRows,
@@ -745,18 +747,24 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
                               borderRadius: BorderRadius.circular(20),
                               // border: Border.all(color: Colors.white54.withOpacity(0.30), width: 1),
                             ),
-                            child: const Row(
+                            child: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                Icon(Icons.link_rounded, color: Colors.white54, size: 14),
-                                SizedBox(width: 6),
-                                Text(
-                                  'Visit Link',
-                                  style: TextStyle(
-                                    color: Colors.white54,
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w600,
-                                    letterSpacing: 0.5,
+                                const Icon(Icons.link_rounded, color: Colors.white54, size: 14),
+                                const SizedBox(width: 6),
+                                Flexible(
+                                  child: Text(
+                                    (widget.linkLabel != null && widget.linkLabel!.isNotEmpty)
+                                        ? widget.linkLabel!
+                                        : 'Visit Link',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      color: Colors.white54,
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w600,
+                                      letterSpacing: 0.5,
+                                    ),
                                   ),
                                 ),
                               ],
@@ -1814,6 +1822,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         final imageUrl = data['url'] as String? ?? '';
                         final fileName = data['fileName'] as String? ?? 'Unnamed Puzzle';
                         final String? link = data['link'] as String?;
+                        final String? linkLabel = data['linkLabel'] as String?;
                         final int? timer = data['timer'] as int?;
                         final String? reward = data['reward'] as String?;
                         final int? rows = data['rows'] as int?;
@@ -1833,6 +1842,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           fileName: fileName,
                           uploadDateStr: uploadDateStr,
                           link: link,
+                          linkLabel: linkLabel,
                           timer: timer,
                           reward: reward,
                           rows: rows,
@@ -1909,186 +1919,254 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ),
 
-            // StreamBuilder for puzzle_images and puzzle_solvers collection
+            // StreamBuilder for config settings and puzzle leaderboard
             Expanded(
-              child: StreamBuilder<QuerySnapshot>(
+              child: StreamBuilder<DocumentSnapshot>(
                 stream: FirebaseFirestore.instance
-                    .collection('puzzle_images')
+                    .collection('settings')
+                    .doc('winners_config')
                     .snapshots(),
-                builder: (context, puzzleSnapshot) {
-                  final puzzleDocs = puzzleSnapshot.data?.docs ?? [];
-                  final Map<String, Map<String, dynamic>> puzzleMap = {};
-                  for (var doc in puzzleDocs) {
-                    puzzleMap[doc.id] = doc.data() as Map<String, dynamic>;
+                builder: (context, configSnapshot) {
+                  final configData = configSnapshot.data?.data() as Map<String, dynamic>?;
+                  final hideWinners = configData?['hideWinners'] as bool? ?? false;
+
+                  if (hideWinners) {
+                    return Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(24.0),
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.all(20),
+                              decoration: BoxDecoration(
+                                color: Colors.amberAccent.withOpacity(0.05),
+                                shape: BoxShape.circle,
+                                border: Border.all(color: Colors.amberAccent.withOpacity(0.15), width: 1.5),
+                              ),
+                              child: const Icon(
+                                Icons.visibility_off_rounded,
+                                color: Colors.amberAccent,
+                                size: 48,
+                              ),
+                            ),
+                            const SizedBox(height: 24),
+                            const Text(
+                              "Leaderboard Unavailable",
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.white,
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            const Text(
+                              "The winners list is not available.",
+                              textAlign: TextAlign.center,
+                              style: TextStyle(color: Colors.white54, fontSize: 13),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
                   }
 
                   return StreamBuilder<QuerySnapshot>(
                     stream: FirebaseFirestore.instance
-                        .collection('puzzle_solvers')
+                        .collection('puzzle_images')
                         .snapshots(),
-                    builder: (context, snapshot) {
-                      if (snapshot.hasError) {
-                        return Center(
-                          child: Text(
-                            "Error loading winners: ${snapshot.error}",
-                            style: const TextStyle(color: Colors.white54),
-                          ),
-                        );
+                    builder: (context, puzzleSnapshot) {
+                      final puzzleDocs = puzzleSnapshot.data?.docs ?? [];
+                      final Map<String, Map<String, dynamic>> puzzleMap = {};
+                      for (var doc in puzzleDocs) {
+                        puzzleMap[doc.id] = doc.data() as Map<String, dynamic>;
                       }
 
-                      if (snapshot.connectionState == ConnectionState.waiting) {
-                        return const Center(
-                          child: CircularProgressIndicator(
-                            valueColor: AlwaysStoppedAnimation<Color>(Colors.cyanAccent),
-                          ),
-                        );
-                      }
-
-                      final docs = snapshot.data?.docs ?? [];
-
-                      final now = DateTime.now();
-                      final todayDocs = docs.where((doc) {
-                        final data = doc.data() as Map<String, dynamic>;
-                        final timestamp = data['completedAt'] as Timestamp?;
-                        if (timestamp == null) return false;
-                        final date = timestamp.toDate();
-                        return date.year == now.year && date.month == now.month && date.day == now.day;
-                      }).toList();
-
-                      if (todayDocs.isEmpty) {
-                        return Center(
-                          child: Padding(
-                            padding: const EdgeInsets.all(24.0),
-                            child: Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Container(
-                                  padding: const EdgeInsets.all(20),
-                                  decoration: BoxDecoration(
-                                    color: Colors.amberAccent.withOpacity(0.05),
-                                    shape: BoxShape.circle,
-                                    border: Border.all(color: Colors.amberAccent.withOpacity(0.15), width: 1.5),
-                                  ),
-                                  child: const Icon(
-                                    Icons.emoji_events_rounded,
-                                    color: Colors.amberAccent,
-                                    size: 48,
-                                  ),
-                                ),
-                                const SizedBox(height: 24),
-                                const Text(
-                                  "No Winners Today",
-                                  style: TextStyle(
-                                    fontSize: 18,
-                                    fontWeight: FontWeight.bold,
-                                    color: Colors.white,
-                                  ),
-                                ),
-                                const SizedBox(height: 8),
-                                const Text(
-                                  "Be the first to complete a puzzle today and claim your spot on the leaderboard!",
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(color: Colors.white54, fontSize: 13),
-                                ),
-                              ],
-                            ),
-                          ),
-                        );
-                      }
-
-                      // Sort locally by timeTaken ascending (fastest solvers first)
-                      final sortedDocs = List<QueryDocumentSnapshot>.from(todayDocs);
-                      sortedDocs.sort((a, b) {
-                        final dataA = a.data() as Map<String, dynamic>;
-                        final dataB = b.data() as Map<String, dynamic>;
-                        final timeA = dataA['timeTaken'] as int? ?? 0;
-                        final timeB = dataB['timeTaken'] as int? ?? 0;
-                        return timeA.compareTo(timeB);
-                      });
-
-                      return ListView.builder(
-                        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
-                        itemCount: sortedDocs.length,
-                        itemBuilder: (context, index) {
-                          final data = sortedDocs[index].data() as Map<String, dynamic>;
-                          final rawName = data['userName'] as String? ?? 'Guest Player';
-                          final firstName = rawName.trim().split(' ').first;
-                          final userPhoto = data['userPhoto'] as String? ?? '';
-                          final timeTaken = data['timeTaken'] as int? ?? 0;
-                          final puzzleId = data['puzzleId'] as String? ?? '';
-                          final solverImageUrl = data['imageUrl'] as String? ?? '';
-
-                          final puzzleInfo = puzzleMap[puzzleId];
-                          final puzzleTitle = puzzleInfo?['fileName'] as String? ?? 'Solved Puzzle';
-                          final puzzleImageUrl = puzzleInfo?['url'] as String? ?? solverImageUrl;
-
-                          final mins = timeTaken ~/ 60;
-                          final secs = timeTaken % 60;
-                          final timeStr = mins > 0 ? '${mins}m ${secs}s' : '${secs}s';
-
-                          // Rank styling
-                          Widget rankWidget;
-                          if (index == 0) {
-                            rankWidget = const Text("🥇", style: TextStyle(fontSize: 18));
-                          } else if (index == 1) {
-                            rankWidget = const Text("🥈", style: TextStyle(fontSize: 18));
-                          } else if (index == 2) {
-                            rankWidget = const Text("🥉", style: TextStyle(fontSize: 18));
-                          } else {
-                            rankWidget = Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                              decoration: BoxDecoration(
-                                color: Colors.white.withOpacity(0.08),
-                                borderRadius: BorderRadius.circular(6),
-                              ),
+                      return StreamBuilder<QuerySnapshot>(
+                        stream: FirebaseFirestore.instance
+                            .collection('puzzle_solvers')
+                            .snapshots(),
+                        builder: (context, snapshot) {
+                          if (snapshot.hasError) {
+                            return Center(
                               child: Text(
-                                "#${index + 1}",
-                                style: const TextStyle(
-                                  color: Colors.white70,
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 11,
-                                ),
+                                "Error loading winners: ${snapshot.error}",
+                                style: const TextStyle(color: Colors.white54),
                               ),
                             );
                           }
 
-                          return Container(
-                            margin: const EdgeInsets.only(bottom: 12),
-                            decoration: BoxDecoration(
-                              color: const Color(0xFF1E293B),
-                              borderRadius: BorderRadius.circular(16),
-                              border: Border.all(
-                                color: index < 3
-                                    ? Colors.amberAccent.withOpacity(0.3)
-                                    : Colors.white.withOpacity(0.08),
-                                width: index < 3 ? 1.5 : 1,
+                          if (snapshot.connectionState == ConnectionState.waiting) {
+                            return const Center(
+                              child: CircularProgressIndicator(
+                                valueColor: AlwaysStoppedAnimation<Color>(Colors.cyanAccent),
                               ),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: Colors.black.withOpacity(0.15),
-                                  blurRadius: 8,
-                                  offset: const Offset(0, 3),
+                            );
+                          }
+
+                          final docs = snapshot.data?.docs ?? [];
+
+                          final now = DateTime.now();
+                          final todayDocs = docs.where((doc) {
+                            final data = doc.data() as Map<String, dynamic>;
+                            final timestamp = data['completedAt'] as Timestamp?;
+                            if (timestamp == null) return false;
+                            final date = timestamp.toDate();
+                            return date.year == now.year && date.month == now.month && date.day == now.day;
+                          }).toList();
+
+                          final String? winnersText = configData?['winnersText'] as String?;
+                          final String? winnersLink = configData?['winnersLink'] as String?;
+                          final hasHeader = winnersText != null && winnersText.trim().isNotEmpty;
+
+                          if (todayDocs.isEmpty) {
+                            return ListView(
+                              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+                              children: [
+                                if (hasHeader) _buildWinnersHeader(winnersText, winnersLink),
+                                const SizedBox(height: 40),
+                                Center(
+                                  child: Padding(
+                                    padding: const EdgeInsets.all(24.0),
+                                    child: Column(
+                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      children: [
+                                        Container(
+                                          padding: const EdgeInsets.all(20),
+                                          decoration: BoxDecoration(
+                                            color: Colors.amberAccent.withOpacity(0.05),
+                                            shape: BoxShape.circle,
+                                            border: Border.all(color: Colors.amberAccent.withOpacity(0.15), width: 1.5),
+                                          ),
+                                          child: const Icon(
+                                            Icons.emoji_events_rounded,
+                                            color: Colors.amberAccent,
+                                            size: 48,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 24),
+                                        const Text(
+                                          "No Winners Today",
+                                          style: TextStyle(
+                                            fontSize: 18,
+                                            fontWeight: FontWeight.bold,
+                                            color: Colors.white,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 8),
+                                        const Text(
+                                          "Be the first to complete a puzzle today and claim your spot on the leaderboard!",
+                                          textAlign: TextAlign.center,
+                                          style: TextStyle(color: Colors.white54, fontSize: 13),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
                                 ),
                               ],
-                            ),
-                            child: Material(
-                              color: Colors.transparent,
-                              borderRadius: BorderRadius.circular(16),
-                              child: InkWell(
+                            );
+                          }
+
+                          // Sort locally by timeTaken ascending (fastest solvers first)
+                          final sortedDocs = List<QueryDocumentSnapshot>.from(todayDocs);
+                          sortedDocs.sort((a, b) {
+                            final dataA = a.data() as Map<String, dynamic>;
+                            final dataB = b.data() as Map<String, dynamic>;
+                            final timeA = dataA['timeTaken'] as int? ?? 0;
+                            final timeB = dataB['timeTaken'] as int? ?? 0;
+                            return timeA.compareTo(timeB);
+                          });
+
+                          return ListView.builder(
+                            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+                            itemCount: sortedDocs.length + (hasHeader ? 1 : 0),
+                            itemBuilder: (context, index) {
+                              if (hasHeader && index == 0) {
+                                return _buildWinnersHeader(winnersText, winnersLink);
+                              }
+
+                              final actualIndex = hasHeader ? index - 1 : index;
+                              final data = sortedDocs[actualIndex].data() as Map<String, dynamic>;
+                              final rawName = data['userName'] as String? ?? 'Guest Player';
+                              final firstName = rawName.trim().split(' ').first;
+                              final userPhoto = data['userPhoto'] as String? ?? '';
+                              final timeTaken = data['timeTaken'] as int? ?? 0;
+                              final puzzleId = data['puzzleId'] as String? ?? '';
+                              final solverImageUrl = data['imageUrl'] as String? ?? '';
+
+                              final puzzleInfo = puzzleMap[puzzleId];
+                              final puzzleTitle = puzzleInfo?['fileName'] as String? ?? 'Solved Puzzle';
+                              final puzzleImageUrl = puzzleInfo?['url'] as String? ?? solverImageUrl;
+
+                              final mins = timeTaken ~/ 60;
+                              final secs = timeTaken % 60;
+                              final timeStr = mins > 0 ? '${mins}m ${secs}s' : '${secs}s';
+
+                              // Rank styling
+                              Widget rankWidget;
+                              final rankIndex = actualIndex;
+                              if (rankIndex == 0) {
+                                rankWidget = const Text("🥇", style: TextStyle(fontSize: 18));
+                              } else if (rankIndex == 1) {
+                                rankWidget = const Text("🥈", style: TextStyle(fontSize: 18));
+                              } else if (rankIndex == 2) {
+                                rankWidget = const Text("🥉", style: TextStyle(fontSize: 18));
+                              } else {
+                              rankWidget = Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: Colors.white.withOpacity(0.08),
+                                  borderRadius: BorderRadius.circular(6),
+                                ),
+                                child: Text(
+                                  "#${rankIndex + 1}",
+                                  style: const TextStyle(
+                                    color: Colors.white70,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 11,
+                                  ),
+                                ),
+                              );
+                            }
+
+                            return Container(
+                              margin: const EdgeInsets.only(bottom: 12),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF1E293B),
                                 borderRadius: BorderRadius.circular(16),
-                                onTap: () {
-                                  if (puzzleId.isNotEmpty) {
-                                    _navigateToGame(
-                                      puzzleId: puzzleId,
-                                      imageUrl: puzzleImageUrl,
-                                      link: puzzleInfo?['link'] as String?,
-                                      timer: puzzleInfo?['timer'] as int?,
-                                      reward: puzzleInfo?['reward'] as String?,
-                                      initialRows: puzzleInfo?['rows'] as int?,
-                                      initialCols: puzzleInfo?['cols'] as int?,
-                                    );
-                                  }
-                                },
+                                border: Border.all(
+                                  color: rankIndex < 3
+                                      ? Colors.amberAccent.withOpacity(0.3)
+                                      : Colors.white.withOpacity(0.08),
+                                  width: rankIndex < 3 ? 1.5 : 1,
+                                ),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: Colors.black.withOpacity(0.15),
+                                    blurRadius: 8,
+                                    offset: const Offset(0, 3),
+                                  ),
+                                ],
+                              ),
+                              child: Material(
+                                color: Colors.transparent,
+                                borderRadius: BorderRadius.circular(16),
+                                child: InkWell(
+                                  borderRadius: BorderRadius.circular(16),
+                                  onTap: () {
+                                    if (puzzleId.isNotEmpty) {
+                                      _navigateToGame(
+                                        puzzleId: puzzleId,
+                                        imageUrl: puzzleImageUrl,
+                                        link: puzzleInfo?['link'] as String?,
+                                        linkLabel: puzzleInfo?['linkLabel'] as String?,
+                                        timer: puzzleInfo?['timer'] as int?,
+                                        reward: puzzleInfo?['reward'] as String?,
+                                        initialRows: puzzleInfo?['rows'] as int?,
+                                        initialCols: puzzleInfo?['cols'] as int?,
+                                      );
+                                    }
+                                  },
                                 child: Padding(
                                   padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
                                   child: Row(
@@ -2220,8 +2298,10 @@ class _HomeScreenState extends State<HomeScreen> {
                     },
                   );
                 },
-              ),
-            ),
+              );
+            },
+          ),
+        ),
           ],
         ),
       ),
@@ -2490,6 +2570,7 @@ class _HomeScreenState extends State<HomeScreen> {
     required String fileName,
     required String uploadDateStr,
     String? link,
+    String? linkLabel,
     int? timer,
     String? reward,
     int? rows,
@@ -2520,6 +2601,7 @@ class _HomeScreenState extends State<HomeScreen> {
               puzzleId: puzzleId,
               imageUrl: imageUrl,
               link: link,
+              linkLabel: linkLabel,
               timer: timer,
               reward: reward,
               initialRows: rows,
@@ -2692,6 +2774,7 @@ class _HomeScreenState extends State<HomeScreen> {
     String? puzzleId,
     required String imageUrl,
     String? link,
+    String? linkLabel,
     int? timer,
     String? reward,
     int? initialRows,
@@ -2751,6 +2834,7 @@ class _HomeScreenState extends State<HomeScreen> {
           puzzleId: puzzleId,
           imageUrl: imageUrl,
           link: link,
+          linkLabel: linkLabel,
           timer: timer,
           reward: reward,
           initialRows: initialRows,
@@ -2768,6 +2852,90 @@ class _HomeScreenState extends State<HomeScreen> {
           );
         },
         transitionDuration: const Duration(milliseconds: 500),
+      ),
+    );
+  }
+
+  Widget _buildWinnersHeader(String text, String? link) {
+    final bool hasLink = link != null && link.trim().isNotEmpty;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 16),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1E293B),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: Colors.amberAccent.withOpacity(0.2),
+          width: 1,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.15),
+            blurRadius: 8,
+            offset: const Offset(0, 3),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            text,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 14,
+              fontWeight: FontWeight.w500,
+              height: 1.4,
+            ),
+          ),
+          if (hasLink) ...[
+            const SizedBox(height: 12),
+            InkWell(
+              onTap: () async {
+                final uri = Uri.tryParse(link.trim());
+                if (uri != null && await canLaunchUrl(uri)) {
+                  await launchUrl(uri, mode: LaunchMode.externalApplication);
+                }
+              },
+              borderRadius: BorderRadius.circular(8),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: Colors.amberAccent.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                    color: Colors.amberAccent.withOpacity(0.3),
+                    width: 1,
+                  ),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(
+                      Icons.link_rounded,
+                      color: Colors.amberAccent,
+                      size: 16,
+                    ),
+                    const SizedBox(width: 8),
+                    Flexible(
+                      child: Text(
+                        link,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Colors.amberAccent,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          decoration: TextDecoration.underline,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ],
       ),
     );
   }
@@ -3163,7 +3331,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
                     // Slogan
                     Text(
-                      'Solve Custom Puzzles & Earn Rewards',
+                      'Sharp your mind',
                       textAlign: TextAlign.center,
                       style: TextStyle(
                         fontSize: 14,
