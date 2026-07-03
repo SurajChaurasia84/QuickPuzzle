@@ -1816,25 +1816,6 @@ class JigsawThemePainter extends CustomPainter {
       for (double y = 0; y < size.height; y += 4) {
         canvas.drawLine(Offset(0, y), Offset(size.width, y), paint);
       }
-    } else if (themeIndex == 4 || themeIndex == 5 || themeIndex == 6 || themeIndex == 7) {
-      // Wood plank lines effect (vertical lines with varied spacing)
-      final plankPaint = Paint()
-        ..color = Colors.black.withOpacity(0.12)
-        ..strokeWidth = 1.5;
-      final spacing = size.width / 8;
-      for (double x = spacing; x < size.width; x += spacing) {
-        canvas.drawLine(Offset(x, 0), Offset(x, size.height), plankPaint);
-        
-        // Add subtle wood grain vertical curves
-        final grainPaint = Paint()
-          ..color = Colors.white.withOpacity(0.03)
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 1;
-        final path = Path();
-        path.moveTo(x - 20, 0);
-        path.quadraticBezierTo(x - 5, size.height * 0.5, x - 25, size.height);
-        canvas.drawPath(path, grainPaint);
-      }
     }
   }
 
@@ -1981,7 +1962,7 @@ class _HomeScreenState extends State<HomeScreen> {
           items: const [
             BottomNavigationBarItem(
               icon: Icon(Icons.extension_rounded),
-              label: 'Reward\n Puzzle',
+              label: 'Reward',
             ),
             BottomNavigationBarItem(
               icon: Icon(Icons.psychology_rounded),
@@ -2249,7 +2230,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   // Firestore Stream Builder
                   StreamBuilder<QuerySnapshot>(
                     stream: FirebaseFirestore.instance
-                        .collection('puzzle_images')
+                        .collection('sharpen_images')
                         .orderBy('uploadedAt', descending: true)
                         .snapshots(),
                     builder: (context, snapshot) {
