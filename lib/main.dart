@@ -10,13 +10,21 @@ import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
+import 'ad_helper.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   try {
     await Firebase.initializeApp();
+    await _setupNotifications();
   } catch (e) {
     debugPrint('Firebase initialization failed: $e');
+  }
+  try {
+    await AdHelper.initialize();
+  } catch (e) {
+    debugPrint('AdHelper initialization failed: $e');
   }
   SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
     statusBarColor: Colors.transparent,
@@ -29,6 +37,21 @@ void main() async {
     DeviceOrientation.portraitUp,
   ]);
   runApp(const TopPuzzleApp());
+}
+
+Future<void> _setupNotifications() async {
+  try {
+    final messaging = FirebaseMessaging.instance;
+    await messaging.requestPermission(
+      alert: true,
+      badge: true,
+      sound: true,
+    );
+    await messaging.subscribeToTopic('puzzles');
+    debugPrint('FCM Notifications initialized and subscribed to puzzles topic.');
+  } catch (e) {
+    debugPrint('FCM initialization failed: $e');
+  }
 }
 
 class TopPuzzleApp extends StatelessWidget {
@@ -589,8 +612,11 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
     final totalWidth = unsnappedCount * (drawerPw + 16.0);
     final maxScroll = math.max(0.0, totalWidth - trayWidth);
 
+    // Speed up scrolling by multiplying the touch delta
+    final adjustedDelta = delta * 2.0;
+
     setState(() {
-      _trayScrollOffset = (_trayScrollOffset + delta).clamp(0.0, maxScroll);
+      _trayScrollOffset = (_trayScrollOffset + adjustedDelta).clamp(0.0, maxScroll);
       _organizeTrayPieces();
     });
   }
@@ -935,6 +961,7 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
           ),
         ),
       ),
+      bottomNavigationBar: const BannerAdWidget(),
     );
   }
 
@@ -1191,7 +1218,8 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
           key: ValueKey('jigsaw_piece_${piece.row}_${piece.col}'),
           left: piece.currentPosition.dx,
           top: piece.currentPosition.dy,
-          child: GestureDetector(
+          child: RepaintBoundary(
+            child: GestureDetector(
             onPanStart: (details) {
               if (_isGameOver || _hasWon) return;
               _isScrollingTray = false;
@@ -1304,7 +1332,8 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
             ),
           ),
         ),
-      );
+      ),
+    );
     }
 
     return list;
@@ -1920,14 +1949,21 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFF0F172A),
-      body: IndexedStack(
-        index: _currentTabIndex,
+      body: Column(
         children: [
-          _buildHomeTab(context),
-          _buildPracticeTab(context),
-          _buildWinnersTab(),
-          _buildOfferwallTab(),
-          const SettingsScreen(),
+          Expanded(
+            child: IndexedStack(
+              index: _currentTabIndex,
+              children: [
+                _buildHomeTab(context),
+                _buildPracticeTab(context),
+                _buildWinnersTab(),
+                _buildOfferwallTab(),
+                const SettingsScreen(),
+              ],
+            ),
+          ),
+          const BannerAdWidget(showPlaceholder: false),
         ],
       ),
       bottomNavigationBar: Container(
@@ -3454,7 +3490,11 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
 
       if (currentStep >= steps) {
         timer.cancel();
-        _navigateToGame();
+        AdHelper.appOpenAdManager.showAdIfAvailable(
+          onComplete: () {
+            _navigateToGame();
+          },
+        );
       }
     });
   }
