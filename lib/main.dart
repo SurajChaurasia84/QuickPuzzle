@@ -11,6 +11,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter/scheduler.dart';
 import 'ad_helper.dart';
 
 void main() async {
@@ -239,6 +240,9 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
   final List<SparkleParticle> _sparkles = [];
   AnimationController? _sparkleController;
 
+  Ticker? _momentumTicker;
+  double _momentumVelocity = 0.0;
+
   @override
   void initState() {
     super.initState();
@@ -361,6 +365,7 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
 
   @override
   void dispose() {
+    _momentumTicker?.dispose();
     _countdownTimer?.cancel();
     _sparkleController?.dispose();
     super.dispose();
@@ -612,13 +617,40 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
     final totalWidth = unsnappedCount * (drawerPw + 16.0);
     final maxScroll = math.max(0.0, totalWidth - trayWidth);
 
-    // Speed up scrolling by multiplying the touch delta
-    final adjustedDelta = delta * 2.0;
-
     setState(() {
-      _trayScrollOffset = (_trayScrollOffset + adjustedDelta).clamp(0.0, maxScroll);
+      _trayScrollOffset = (_trayScrollOffset + delta).clamp(0.0, maxScroll);
       _organizeTrayPieces();
     });
+  }
+
+  void _startMomentum(double velocityX) {
+    _momentumTicker?.stop();
+    _momentumVelocity = -velocityX; // Invert to scroll in the swipe direction
+
+    // Ignore very slow swipes to prevent slow drifting
+    if (_momentumVelocity.abs() < 120.0) return;
+
+    // Clamp velocity to prevent overly hyper scrolling
+    _momentumVelocity = _momentumVelocity.clamp(-6000.0, 6000.0);
+
+    _momentumTicker = createTicker((elapsed) {
+      final double dt = 0.016; // Approx frame time
+      _scrollTray(_momentumVelocity * dt);
+
+      // Decelerate over time (kinetic friction representation)
+      _momentumVelocity *= 0.94; // Deceleration decay
+
+      // Stop once velocity is too low
+      if (_momentumVelocity.abs() < 50.0) {
+        _momentumTicker?.stop();
+      }
+    });
+    _momentumTicker?.start();
+  }
+
+  void _stopMomentum() {
+    _momentumTicker?.stop();
+    _momentumVelocity = 0.0;
   }
 
   // Checks if a dropped piece is near its correct board coordinates to snap it
@@ -1158,8 +1190,14 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
         Expanded(
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
+            onPanStart: (details) {
+              _stopMomentum();
+            },
             onPanUpdate: (details) {
-              _scrollTray(-details.delta.dx);
+              _scrollTray(-details.delta.dx * 1.3);
+            },
+            onPanEnd: (details) {
+              _startMomentum(details.velocity.pixelsPerSecond.dx);
             },
             child: const SizedBox.expand(),
           ),
@@ -1222,6 +1260,7 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
             child: GestureDetector(
             onPanStart: (details) {
               if (_isGameOver || _hasWon) return;
+              _stopMomentum();
               _isScrollingTray = false;
               setState(() {
                 _activeDraggingIndex = i;
@@ -1256,7 +1295,7 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
               }
 
               if (_isScrollingTray) {
-                _scrollTray(-details.delta.dx);
+                _scrollTray(-details.delta.dx * 1.3);
               } else if (_isDraggingPiece) {
                 setState(() {
                   piece.currentPosition += details.delta;
@@ -1274,6 +1313,7 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
                 _checkSnap(i);
               } else {
                 _organizeTrayPieces();
+                _startMomentum(details.velocity.pixelsPerSecond.dx);
               }
             },
             child: SizedBox(
@@ -3512,7 +3552,14 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
             .timeout(const Duration(seconds: 4));
         final mobile = doc.data()?['mobile'] as String?;
         if (mobile == null || mobile.trim().isEmpty) {
-          nextScreen = EditProfileScreen(user: user, showSkip: true);
+          final prefs = await SharedPreferences.getInstance();
+          final prompted = prefs.getBool('profile_edit_prompted') ?? false;
+          if (!prompted) {
+            await prefs.setBool('profile_edit_prompted', true);
+            nextScreen = EditProfileScreen(user: user, showSkip: true);
+          } else {
+            nextScreen = const HomeScreen();
+          }
         } else {
           nextScreen = const HomeScreen();
         }
