@@ -50,6 +50,18 @@ Future<void> _setupNotifications() async {
     );
     await messaging.subscribeToTopic('puzzles');
     debugPrint('FCM Notifications initialized and subscribed to puzzles topic.');
+
+    // Handle initial notification if app was terminated and opened via tap
+    messaging.getInitialMessage().then((RemoteMessage? message) {
+      if (message != null) {
+        debugPrint('FCM initial message received: ${message.messageId}');
+      }
+    });
+
+    // Handle background notification clicks when app is in background
+    FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
+      debugPrint('FCM onMessageOpenedApp received: ${message.messageId}');
+    });
   } catch (e) {
     debugPrint('FCM initialization failed: $e');
   }
@@ -178,6 +190,7 @@ class SparklePainter extends CustomPainter {
 class JigsawGameScreen extends StatefulWidget {
   final String? puzzleId;
   final String imageUrl;
+  final String? puzzleTitle;
   final String? link;
   final String? linkLabel;
   final int? timer;
@@ -190,6 +203,7 @@ class JigsawGameScreen extends StatefulWidget {
     super.key,
     this.puzzleId,
     required this.imageUrl,
+    this.puzzleTitle,
     this.link,
     this.linkLabel,
     this.timer,
@@ -784,6 +798,7 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
       await FirebaseFirestore.instance.collection('puzzle_solvers').add({
         'puzzleId': widget.puzzleId ?? '',
         'imageUrl': widget.imageUrl,
+        'puzzleTitle': widget.puzzleTitle ?? 'Solved Puzzle',
         'userId': user?.uid ?? 'guest',
         'userName': user?.displayName ?? (user == null ? 'Guest Player' : 'User'),
         'userEmail': user?.email ?? '',
@@ -1120,7 +1135,7 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
   // Renders the board backdrop showing layout hints
   Widget _buildGameBoard() {
     return Hero(
-      tag: widget.imageUrl,
+      tag: 'hero_${widget.isOffline ? "practice" : "home"}_${widget.puzzleId ?? widget.imageUrl}',
       child: Container(
         width: _boardSize,
         height: _boardSize,
@@ -1144,21 +1159,28 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
               borderRadius: BorderRadius.zero,
               child: Opacity(
                 opacity: 0.20,
-                child: CachedNetworkImage(
-                  imageUrl: widget.imageUrl,
-                  width: _boardSize,
-                  height: _boardSize,
-                  fit: BoxFit.fill,
-                  placeholder: (context, url) => const Center(
-                    child: CircularProgressIndicator(
-                      valueColor: AlwaysStoppedAnimation<Color>(Colors.cyanAccent),
-                    ),
-                  ),
-                  errorWidget: (context, url, error) => Container(
-                    color: const Color(0xFF1E293B),
-                    child: const Icon(Icons.broken_image, color: Colors.cyanAccent, size: 48),
-                  ),
-                ),
+                child: widget.imageUrl.isEmpty || !widget.imageUrl.startsWith('http')
+                    ? Container(
+                        width: _boardSize,
+                        height: _boardSize,
+                        color: const Color(0xFF1E293B),
+                        child: const Icon(Icons.broken_image, color: Colors.cyanAccent, size: 48),
+                      )
+                    : CachedNetworkImage(
+                        imageUrl: widget.imageUrl,
+                        width: _boardSize,
+                        height: _boardSize,
+                        fit: BoxFit.fill,
+                        placeholder: (context, url) => const Center(
+                          child: CircularProgressIndicator(
+                            valueColor: AlwaysStoppedAnimation<Color>(Colors.cyanAccent),
+                          ),
+                        ),
+                        errorWidget: (context, url, error) => Container(
+                          color: const Color(0xFF1E293B),
+                          child: const Icon(Icons.broken_image, color: Colors.cyanAccent, size: 48),
+                        ),
+                      ),
               ),
             ),
 
@@ -1341,16 +1363,23 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
                         Positioned(
                           left: (-piece.col * w + 0.20 * w) * scale,
                           top: (-piece.row * h + 0.20 * h) * scale,
-                          child: CachedNetworkImage(
-                            imageUrl: widget.imageUrl,
-                            width: _boardSize * scale,
-                            height: _boardSize * scale,
-                            fit: BoxFit.fill,
-                            errorWidget: (context, url, error) => Container(
-                              color: const Color(0xFF1E293B),
-                              child: const Icon(Icons.broken_image, color: Colors.cyanAccent),
-                            ),
-                          ),
+                          child: widget.imageUrl.isEmpty || !widget.imageUrl.startsWith('http')
+                              ? Container(
+                                  width: _boardSize * scale,
+                                  height: _boardSize * scale,
+                                  color: const Color(0xFF1E293B),
+                                  child: const Icon(Icons.broken_image, color: Colors.cyanAccent),
+                                )
+                              : CachedNetworkImage(
+                                  imageUrl: widget.imageUrl,
+                                  width: _boardSize * scale,
+                                  height: _boardSize * scale,
+                                  fit: BoxFit.fill,
+                                  errorWidget: (context, url, error) => Container(
+                                    color: const Color(0xFF1E293B),
+                                    child: const Icon(Icons.broken_image, color: Colors.cyanAccent),
+                                  ),
+                                ),
                         ),
                       ],
                     ),
@@ -1906,11 +1935,47 @@ class _HomeScreenState extends State<HomeScreen> {
   StreamSubscription? _solversSub;
   StreamSubscription? _failedSub;
 
+  Stream<QuerySnapshot>? _puzzleImagesStream;
+  Stream<QuerySnapshot>? _sharpenImagesStream;
+  Stream<DocumentSnapshot>? _winnersConfigStream;
+  Stream<QuerySnapshot>? _todaySolversStream;
+  Stream<QuerySnapshot>? _textLinksStream;
+
   @override
   void initState() {
     super.initState();
     _loadLocalStatuses();
     _syncFirestoreStatuses();
+    _initStreams();
+  }
+
+  void _initStreams() {
+    _puzzleImagesStream = FirebaseFirestore.instance
+        .collection('puzzle_images')
+        .orderBy('uploadedAt', descending: true)
+        .snapshots();
+
+    _sharpenImagesStream = FirebaseFirestore.instance
+        .collection('sharpen_images')
+        .orderBy('uploadedAt', descending: true)
+        .snapshots();
+
+    _winnersConfigStream = FirebaseFirestore.instance
+        .collection('settings')
+        .doc('winners_config')
+        .snapshots();
+
+    final now = DateTime.now();
+    final startOfToday = DateTime(now.year, now.month, now.day);
+    _todaySolversStream = FirebaseFirestore.instance
+        .collection('puzzle_solvers')
+        .where('completedAt', isGreaterThanOrEqualTo: Timestamp.fromDate(startOfToday))
+        .snapshots();
+
+    _textLinksStream = FirebaseFirestore.instance
+        .collection('text_links')
+        .orderBy('uploadedAt', descending: true)
+        .snapshots();
   }
 
   @override
@@ -1954,7 +2019,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _syncFirestoreStatuses() {
     final user = FirebaseAuth.instance.currentUser;
-    final userId = user?.uid ?? 'guest';
+    // CRITICAL BUG FIX: Do NOT query global 'guest' records in Firestore for unauthenticated users!
+    if (user == null || user.uid.isEmpty) return;
+    final userId = user.uid;
 
     _solversSub = FirebaseFirestore.instance
         .collection('puzzle_solvers')
@@ -2137,10 +2204,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 slivers: [
                   // Firestore Stream Builder
                   StreamBuilder<QuerySnapshot>(
-                    stream: FirebaseFirestore.instance
-                        .collection('puzzle_images')
-                        .orderBy('uploadedAt', descending: true)
-                        .snapshots(),
+                    stream: _puzzleImagesStream,
                     builder: (context, snapshot) {
                 if (snapshot.hasError) {
                   return SliverFillRemaining(
@@ -2189,10 +2253,10 @@ class _HomeScreenState extends State<HomeScreen> {
                         final fileName = data['fileName'] as String? ?? 'Unnamed Puzzle';
                         final String? link = data['link'] as String?;
                         final String? linkLabel = data['linkLabel'] as String?;
-                        final int? timer = data['timer'] as int?;
+                        final int? timer = data['timer'] != null ? (data['timer'] as num).toInt() : null;
                         final String? reward = data['reward'] as String?;
-                        final int? rows = data['rows'] as int?;
-                        final int? cols = data['cols'] as int?;
+                        final int? rows = data['rows'] != null ? (data['rows'] as num).toInt() : null;
+                        final int? cols = data['cols'] != null ? (data['cols'] as num).toInt() : null;
                         
                         // Format Upload Date
                         String uploadDateStr = 'Unknown Date';
@@ -2305,10 +2369,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 slivers: [
                   // Firestore Stream Builder
                   StreamBuilder<QuerySnapshot>(
-                    stream: FirebaseFirestore.instance
-                        .collection('sharpen_images')
-                        .orderBy('uploadedAt', descending: true)
-                        .snapshots(),
+                    stream: _sharpenImagesStream,
                     builder: (context, snapshot) {
                       if (snapshot.hasError) {
                         return SliverFillRemaining(
@@ -2357,10 +2418,10 @@ class _HomeScreenState extends State<HomeScreen> {
                               final fileName = data['fileName'] as String? ?? 'Unnamed Puzzle';
                               final String? link = data['link'] as String?;
                               final String? linkLabel = data['linkLabel'] as String?;
-                              final int? timer = data['timer'] as int?;
+                              final int? timer = data['timer'] != null ? (data['timer'] as num).toInt() : null;
                               final String? reward = data['reward'] as String?;
-                              final int? rows = data['rows'] as int?;
-                              final int? cols = data['cols'] as int?;
+                              final int? rows = data['rows'] != null ? (data['rows'] as num).toInt() : null;
+                              final int? cols = data['cols'] != null ? (data['cols'] as num).toInt() : null;
                               
                               // Format Upload Date
                               String uploadDateStr = 'Unknown Date';
@@ -2460,10 +2521,7 @@ class _HomeScreenState extends State<HomeScreen> {
             // StreamBuilder for config settings and puzzle leaderboard
             Expanded(
               child: StreamBuilder<DocumentSnapshot>(
-                stream: FirebaseFirestore.instance
-                    .collection('settings')
-                    .doc('winners_config')
-                    .snapshots(),
+                stream: _winnersConfigStream,
                 builder: (context, configSnapshot) {
                   final configData = configSnapshot.data?.data() as Map<String, dynamic>?;
                   final hideWinners = configData?['hideWinners'] as bool? ?? false;
@@ -2520,201 +2578,170 @@ class _HomeScreenState extends State<HomeScreen> {
                   }
 
                   return StreamBuilder<QuerySnapshot>(
-                    stream: FirebaseFirestore.instance
-                        .collection('puzzle_images')
-                        .snapshots(),
-                    builder: (context, puzzleSnapshot) {
-                      final puzzleDocs = puzzleSnapshot.data?.docs ?? [];
-                      final Map<String, Map<String, dynamic>> puzzleMap = {};
-                      for (var doc in puzzleDocs) {
-                        puzzleMap[doc.id] = doc.data() as Map<String, dynamic>;
+                    stream: _todaySolversStream,
+                    builder: (context, snapshot) {
+                      if (snapshot.hasError) {
+                        return Center(
+                          child: Text(
+                            "Error loading winners: ${snapshot.error}",
+                            style: const TextStyle(color: Colors.white54),
+                          ),
+                        );
                       }
 
-                      return StreamBuilder<QuerySnapshot>(
-                        stream: FirebaseFirestore.instance
-                            .collection('puzzle_solvers')
-                            .snapshots(),
-                        builder: (context, snapshot) {
-                          if (snapshot.hasError) {
-                            return Center(
-                              child: Text(
-                                "Error loading winners: ${snapshot.error}",
-                                style: const TextStyle(color: Colors.white54),
-                              ),
-                            );
-                          }
+                      if (snapshot.connectionState == ConnectionState.waiting) {
+                        return const Center(
+                          child: CircularProgressIndicator(
+                            valueColor: AlwaysStoppedAnimation<Color>(Colors.cyanAccent),
+                          ),
+                        );
+                      }
 
-                          if (snapshot.connectionState == ConnectionState.waiting) {
-                            return const Center(
-                              child: CircularProgressIndicator(
-                                valueColor: AlwaysStoppedAnimation<Color>(Colors.cyanAccent),
-                              ),
-                            );
-                          }
+                      final todayDocs = snapshot.data?.docs ?? [];
 
-                          final docs = snapshot.data?.docs ?? [];
-
-                          final now = DateTime.now();
-                          final todayDocs = docs.where((doc) {
-                            final data = doc.data() as Map<String, dynamic>;
-                            final timestamp = data['completedAt'] as Timestamp?;
-                            if (timestamp == null) return false;
-                            final date = timestamp.toDate();
-                            return date.year == now.year && date.month == now.month && date.day == now.day;
-                          }).toList();
-
-                          final String? winnersText = configData?['winnersText'] as String?;
-                          final String? winnersLink = configData?['winnersLink'] as String?;
-                          final hasHeader = winnersText != null && winnersText.trim().isNotEmpty;
-
-                          if (todayDocs.isEmpty) {
-                            return ListView(
-                              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
-                              children: [
-                                if (hasHeader) _buildWinnersHeader(winnersText, winnersLink),
-                                const SizedBox(height: 40),
-                                Center(
-                                  child: Padding(
-                                    padding: const EdgeInsets.all(24.0),
-                                    child: Column(
-                                      mainAxisAlignment: MainAxisAlignment.center,
-                                      children: [
-                                        Container(
-                                          padding: const EdgeInsets.all(20),
-                                          decoration: BoxDecoration(
-                                            color: Colors.amberAccent.withOpacity(0.05),
-                                            shape: BoxShape.circle,
-                                            border: Border.all(color: Colors.amberAccent.withOpacity(0.15), width: 1.5),
-                                          ),
-                                          child: const Icon(
-                                            Icons.emoji_events_rounded,
-                                            color: Colors.amberAccent,
-                                            size: 48,
-                                          ),
-                                        ),
-                                        const SizedBox(height: 24),
-                                        const Text(
-                                          "No Winners Today",
-                                          style: TextStyle(
-                                            fontSize: 18,
-                                            fontWeight: FontWeight.bold,
-                                            color: Colors.white,
-                                          ),
-                                        ),
-                                        const SizedBox(height: 8),
-                                        const Text(
-                                          "Be the first to complete a puzzle today and claim your spot on the leaderboard!",
-                                          textAlign: TextAlign.center,
-                                          style: TextStyle(color: Colors.white54, fontSize: 13),
-                                        ),
-                                      ],
+                      if (todayDocs.isEmpty) {
+                        return ListView(
+                          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+                          children: [
+                            if (hasHeader) _buildWinnersHeader(winnersText, winnersLink),
+                            const SizedBox(height: 40),
+                            Center(
+                              child: Padding(
+                                padding: const EdgeInsets.all(24.0),
+                                child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Container(
+                                      padding: const EdgeInsets.all(20),
+                                      decoration: BoxDecoration(
+                                        color: Colors.amberAccent.withOpacity(0.05),
+                                        shape: BoxShape.circle,
+                                        border: Border.all(color: Colors.amberAccent.withOpacity(0.15), width: 1.5),
+                                      ),
+                                      child: const Icon(
+                                        Icons.emoji_events_rounded,
+                                        color: Colors.amberAccent,
+                                        size: 48,
+                                      ),
                                     ),
-                                  ),
+                                    const SizedBox(height: 24),
+                                    const Text(
+                                      "No Winners Today",
+                                      style: TextStyle(
+                                        fontSize: 18,
+                                        fontWeight: FontWeight.bold,
+                                        color: Colors.white,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 8),
+                                    const Text(
+                                      "Be the first to complete a puzzle today and claim your spot on the leaderboard!",
+                                      textAlign: TextAlign.center,
+                                      style: TextStyle(color: Colors.white54, fontSize: 13),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ],
+                        );
+                      }
+
+                      // Sort locally by timeTaken ascending (fastest solvers first)
+                      final sortedDocs = List<QueryDocumentSnapshot>.from(todayDocs);
+                      sortedDocs.sort((a, b) {
+                        final dataA = a.data() as Map<String, dynamic>;
+                        final dataB = b.data() as Map<String, dynamic>;
+                        final timeA = dataA['timeTaken'] != null ? (dataA['timeTaken'] as num).toInt() : 0;
+                        final timeB = dataB['timeTaken'] != null ? (dataB['timeTaken'] as num).toInt() : 0;
+                        return timeA.compareTo(timeB);
+                      });
+
+                      return ListView.builder(
+                        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+                        itemCount: sortedDocs.length + (hasHeader ? 1 : 0),
+                        itemBuilder: (context, index) {
+                          if (hasHeader && index == 0) {
+                            return _buildWinnersHeader(winnersText, winnersLink);
+                          }
+
+                          final actualIndex = hasHeader ? index - 1 : index;
+                          final data = sortedDocs[actualIndex].data() as Map<String, dynamic>;
+                          final rawName = data['userName'] as String? ?? 'Guest Player';
+                          final firstName = rawName.trim().split(' ').first;
+                          final userPhoto = data['userPhoto'] as String? ?? '';
+                          final timeTaken = data['timeTaken'] != null ? (data['timeTaken'] as num).toInt() : 0;
+                          final puzzleId = data['puzzleId'] as String? ?? '';
+                          final solverImageUrl = data['imageUrl'] as String? ?? '';
+                          final puzzleTitle = data['puzzleTitle'] as String? ?? data['fileName'] as String? ?? 'Solved Puzzle';
+                          final puzzleImageUrl = solverImageUrl;
+                          final givenTimer = data['givenTimer'] != null ? (data['givenTimer'] as num).toInt() : null;
+
+                          final mins = timeTaken ~/ 60;
+                          final secs = timeTaken % 60;
+                          final timeStr = mins > 0 ? '${mins}m ${secs}s' : '${secs}s';
+
+                          // Rank styling
+                          Widget rankWidget;
+                          final rankIndex = actualIndex;
+                          if (rankIndex == 0) {
+                            rankWidget = const Text("🥇", style: TextStyle(fontSize: 18));
+                          } else if (rankIndex == 1) {
+                            rankWidget = const Text("🥈", style: TextStyle(fontSize: 18));
+                          } else if (rankIndex == 2) {
+                            rankWidget = const Text("🥉", style: TextStyle(fontSize: 18));
+                          } else {
+                            rankWidget = Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: Colors.white.withOpacity(0.08),
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: Text(
+                                "#${rankIndex + 1}",
+                                style: const TextStyle(
+                                  color: Colors.white70,
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 11,
+                                ),
+                              ),
+                            );
+                          }
+
+                          return Container(
+                            margin: const EdgeInsets.only(bottom: 12),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF1E293B),
+                              borderRadius: BorderRadius.circular(16),
+                              border: Border.all(
+                                color: rankIndex < 3
+                                    ? Colors.amberAccent.withOpacity(0.3)
+                                    : Colors.white.withOpacity(0.08),
+                                width: rankIndex < 3 ? 1.5 : 1,
+                              ),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.black.withOpacity(0.15),
+                                  blurRadius: 8,
+                                  offset: const Offset(0, 3),
                                 ),
                               ],
-                            );
-                          }
-
-                          // Sort locally by timeTaken ascending (fastest solvers first)
-                          final sortedDocs = List<QueryDocumentSnapshot>.from(todayDocs);
-                          sortedDocs.sort((a, b) {
-                            final dataA = a.data() as Map<String, dynamic>;
-                            final dataB = b.data() as Map<String, dynamic>;
-                            final timeA = dataA['timeTaken'] as int? ?? 0;
-                            final timeB = dataB['timeTaken'] as int? ?? 0;
-                            return timeA.compareTo(timeB);
-                          });
-
-                          return ListView.builder(
-                            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
-                            itemCount: sortedDocs.length + (hasHeader ? 1 : 0),
-                            itemBuilder: (context, index) {
-                              if (hasHeader && index == 0) {
-                                return _buildWinnersHeader(winnersText, winnersLink);
-                              }
-
-                              final actualIndex = hasHeader ? index - 1 : index;
-                              final data = sortedDocs[actualIndex].data() as Map<String, dynamic>;
-                              final rawName = data['userName'] as String? ?? 'Guest Player';
-                              final firstName = rawName.trim().split(' ').first;
-                              final userPhoto = data['userPhoto'] as String? ?? '';
-                              final timeTaken = data['timeTaken'] as int? ?? 0;
-                              final puzzleId = data['puzzleId'] as String? ?? '';
-                              final solverImageUrl = data['imageUrl'] as String? ?? '';
-
-                              final puzzleInfo = puzzleMap[puzzleId];
-                              final puzzleTitle = puzzleInfo?['fileName'] as String? ?? 'Solved Puzzle';
-                              final puzzleImageUrl = puzzleInfo?['url'] as String? ?? solverImageUrl;
-
-                              final mins = timeTaken ~/ 60;
-                              final secs = timeTaken % 60;
-                              final timeStr = mins > 0 ? '${mins}m ${secs}s' : '${secs}s';
-
-                              // Rank styling
-                              Widget rankWidget;
-                              final rankIndex = actualIndex;
-                              if (rankIndex == 0) {
-                                rankWidget = const Text("🥇", style: TextStyle(fontSize: 18));
-                              } else if (rankIndex == 1) {
-                                rankWidget = const Text("🥈", style: TextStyle(fontSize: 18));
-                              } else if (rankIndex == 2) {
-                                rankWidget = const Text("🥉", style: TextStyle(fontSize: 18));
-                              } else {
-                              rankWidget = Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                decoration: BoxDecoration(
-                                  color: Colors.white.withOpacity(0.08),
-                                  borderRadius: BorderRadius.circular(6),
-                                ),
-                                child: Text(
-                                  "#${rankIndex + 1}",
-                                  style: const TextStyle(
-                                    color: Colors.white70,
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 11,
-                                  ),
-                                ),
-                              );
-                            }
-
-                            return Container(
-                              margin: const EdgeInsets.only(bottom: 12),
-                              decoration: BoxDecoration(
-                                color: const Color(0xFF1E293B),
+                            ),
+                            child: Material(
+                              color: Colors.transparent,
+                              borderRadius: BorderRadius.circular(16),
+                              child: InkWell(
                                 borderRadius: BorderRadius.circular(16),
-                                border: Border.all(
-                                  color: rankIndex < 3
-                                      ? Colors.amberAccent.withOpacity(0.3)
-                                      : Colors.white.withOpacity(0.08),
-                                  width: rankIndex < 3 ? 1.5 : 1,
-                                ),
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: Colors.black.withOpacity(0.15),
-                                    blurRadius: 8,
-                                    offset: const Offset(0, 3),
-                                  ),
-                                ],
-                              ),
-                              child: Material(
-                                color: Colors.transparent,
-                                borderRadius: BorderRadius.circular(16),
-                                child: InkWell(
-                                  borderRadius: BorderRadius.circular(16),
-                                  onTap: () {
-                                    if (puzzleId.isNotEmpty) {
-                                      _navigateToGame(
-                                        puzzleId: puzzleId,
-                                        imageUrl: puzzleImageUrl,
-                                        link: puzzleInfo?['link'] as String?,
-                                        linkLabel: puzzleInfo?['linkLabel'] as String?,
-                                        timer: puzzleInfo?['timer'] as int?,
-                                        reward: puzzleInfo?['reward'] as String?,
-                                        initialRows: puzzleInfo?['rows'] as int?,
-                                        initialCols: puzzleInfo?['cols'] as int?,
-                                      );
-                                    }
-                                  },
+                                onTap: () {
+                                  if (puzzleId.isNotEmpty) {
+                                    _navigateToGame(
+                                      puzzleId: puzzleId,
+                                      imageUrl: puzzleImageUrl,
+                                      puzzleTitle: puzzleTitle,
+                                      timer: givenTimer,
+                                    );
+                                  }
+                                },
                                 child: Padding(
                                   padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
                                   child: Row(
@@ -2846,10 +2873,8 @@ class _HomeScreenState extends State<HomeScreen> {
                     },
                   );
                 },
-              );
-            },
-          ),
-        ),
+              ),
+            ),
           ],
         ),
       ),
@@ -2917,10 +2942,7 @@ class _HomeScreenState extends State<HomeScreen> {
             // StreamBuilder for text_links collection
             Expanded(
               child: StreamBuilder<QuerySnapshot>(
-                stream: FirebaseFirestore.instance
-                    .collection('text_links')
-                    .orderBy('uploadedAt', descending: true)
-                    .snapshots(),
+                stream: _textLinksStream,
                 builder: (context, snapshot) {
                   if (snapshot.hasError) {
                     return Center(
@@ -3149,6 +3171,7 @@ class _HomeScreenState extends State<HomeScreen> {
             onTap: () => _navigateToGame(
               puzzleId: puzzleId,
               imageUrl: imageUrl,
+              puzzleTitle: fileName,
               link: link,
               linkLabel: linkLabel,
               timer: timer,
@@ -3163,31 +3186,40 @@ class _HomeScreenState extends State<HomeScreen> {
                 Opacity(
                   opacity: isFailed ? 0.45 : 1.0,
                   child: Hero(
-                    tag: imageUrl,
-                    child: CachedNetworkImage(
-                      imageUrl: imageUrl,
-                      fit: BoxFit.cover,
-                      placeholder: (context, url) => Center(
-                        child: SizedBox(
-                          width: 24,
-                          height: 24,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            valueColor: AlwaysStoppedAnimation<Color>(
-                              Colors.cyanAccent.withOpacity(0.5),
+                    tag: 'hero_${isOffline ? "practice" : "home"}_${puzzleId ?? imageUrl}',
+                    child: imageUrl.isEmpty || !imageUrl.startsWith('http')
+                        ? Container(
+                            color: const Color(0xFF0F172A),
+                            child: const Icon(
+                              Icons.broken_image_rounded,
+                              color: Colors.cyanAccent,
+                              size: 32,
+                            ),
+                          )
+                        : CachedNetworkImage(
+                            imageUrl: imageUrl,
+                            fit: BoxFit.cover,
+                            placeholder: (context, url) => Center(
+                              child: SizedBox(
+                                width: 24,
+                                height: 24,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  valueColor: AlwaysStoppedAnimation<Color>(
+                                    Colors.cyanAccent.withOpacity(0.5),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            errorWidget: (context, url, error) => Container(
+                              color: const Color(0xFF0F172A),
+                              child: const Icon(
+                                Icons.broken_image_rounded,
+                                color: Colors.cyanAccent,
+                                size: 32,
+                              ),
                             ),
                           ),
-                        ),
-                      ),
-                      errorWidget: (context, url, error) => Container(
-                        color: const Color(0xFF0F172A),
-                        child: const Icon(
-                          Icons.broken_image_rounded,
-                          color: Colors.cyanAccent,
-                          size: 32,
-                        ),
-                      ),
-                    ),
                   ),
                 ),
                 if (isSolved || isFailed)
@@ -3323,6 +3355,7 @@ class _HomeScreenState extends State<HomeScreen> {
    Future<void> _navigateToGame({
     String? puzzleId,
     required String imageUrl,
+    String? puzzleTitle,
     String? link,
     String? linkLabel,
     int? timer,
@@ -3384,6 +3417,7 @@ class _HomeScreenState extends State<HomeScreen> {
         pageBuilder: (context, animation, secondaryAnimation) => JigsawGameScreen(
           puzzleId: puzzleId,
           imageUrl: imageUrl,
+          puzzleTitle: puzzleTitle,
           link: link,
           linkLabel: linkLabel,
           timer: timer,
