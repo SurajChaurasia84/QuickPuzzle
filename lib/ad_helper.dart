@@ -1,9 +1,22 @@
+import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 
 class AdHelper {
-  static const String appOpenAdUnitId = 'ca-app-pub-8573766407241910/8668799839';
-  static const String bannerAdUnitId = 'ca-app-pub-8573766407241910/6411291833';
+  static String get appOpenAdUnitId {
+    if (kDebugMode && Platform.isAndroid) {
+      return 'ca-app-pub-3940256099942544/9257395921'; // Android App Open Test ID
+    }
+    return 'ca-app-pub-8573766407241910/8668799839';
+  }
+
+  static String get bannerAdUnitId {
+    if (kDebugMode && Platform.isAndroid) {
+      return 'ca-app-pub-3940256099942544/6300978111'; // Android Banner Test ID
+    }
+    return 'ca-app-pub-8573766407241910/6411291833';
+  }
 
   static final AppOpenAdManager appOpenAdManager = AppOpenAdManager();
 
