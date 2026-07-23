@@ -386,6 +386,7 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
   }
 
   void _updateSparkles() {
+    if (!mounted) return;
     if (_sparkles.isEmpty) {
       _sparkleController?.stop();
       return;
@@ -443,6 +444,10 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
       _isGameOver = false;
       _countdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
         if (_hasWon) {
+          timer.cancel();
+          return;
+        }
+        if (!mounted) {
           timer.cancel();
           return;
         }
@@ -519,6 +524,28 @@ class _JigsawGameScreenState extends State<JigsawGameScreen> with TickerProvider
                   style: TextStyle(color: Colors.white70),
                 ),
                 const SizedBox(height: 24),
+                if (widget.link != null && widget.link!.isNotEmpty) ...[
+                  ElevatedButton.icon(
+                    onPressed: () async {
+                      final uri = Uri.parse(widget.link!);
+                      if (await canLaunchUrl(uri)) {
+                        await launchUrl(uri, mode: LaunchMode.externalApplication);
+                      }
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.amberAccent,
+                      foregroundColor: const Color(0xFF0F172A),
+                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      textStyle: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    icon: const Icon(Icons.open_in_new_rounded),
+                    label: Text(widget.linkLabel != null && widget.linkLabel!.isNotEmpty
+                        ? widget.linkLabel!.toUpperCase()
+                        : 'VISIT LINK'),
+                  ),
+                  const SizedBox(height: 16),
+                ],
                 ElevatedButton(
                   onPressed: () {
                     Navigator.of(context).pop(); // pop dialog
@@ -1965,11 +1992,8 @@ class _HomeScreenState extends State<HomeScreen> {
         .doc('winners_config')
         .snapshots();
 
-    final now = DateTime.now();
-    final startOfToday = DateTime(now.year, now.month, now.day);
     _todaySolversStream = FirebaseFirestore.instance
         .collection('puzzle_solvers')
-        .where('completedAt', isGreaterThanOrEqualTo: Timestamp.fromDate(startOfToday))
         .snapshots();
 
     _textLinksStream = FirebaseFirestore.instance
@@ -2009,6 +2033,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _updateLocalStatus(String puzzleId, String status) {
+    if (!mounted) return;
     if (_localStatusMap[puzzleId] != status) {
       setState(() {
         _localStatusMap[puzzleId] = status;
@@ -2578,104 +2603,142 @@ class _HomeScreenState extends State<HomeScreen> {
                   }
 
                   return StreamBuilder<QuerySnapshot>(
-                    stream: _todaySolversStream,
-                    builder: (context, snapshot) {
-                      if (snapshot.hasError) {
-                        return Center(
-                          child: Text(
-                            "Error loading winners: ${snapshot.error}",
-                            style: const TextStyle(color: Colors.white54),
-                          ),
-                        );
+                    stream: _puzzleImagesStream,
+                    builder: (context, puzzleSnapshot) {
+                      final puzzleDocs = puzzleSnapshot.data?.docs ?? [];
+                      final Map<String, Map<String, dynamic>> puzzleMap = {};
+                      for (var doc in puzzleDocs) {
+                        puzzleMap[doc.id] = doc.data() as Map<String, dynamic>;
                       }
 
-                      if (snapshot.connectionState == ConnectionState.waiting) {
-                        return const Center(
-                          child: CircularProgressIndicator(
-                            valueColor: AlwaysStoppedAnimation<Color>(Colors.cyanAccent),
-                          ),
-                        );
-                      }
-
-                      final todayDocs = snapshot.data?.docs ?? [];
-
-                      if (todayDocs.isEmpty) {
-                        return ListView(
-                          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
-                          children: [
-                            if (hasHeader) _buildWinnersHeader(winnersText, winnersLink),
-                            const SizedBox(height: 40),
-                            Center(
-                              child: Padding(
-                                padding: const EdgeInsets.all(24.0),
-                                child: Column(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    Container(
-                                      padding: const EdgeInsets.all(20),
-                                      decoration: BoxDecoration(
-                                        color: Colors.amberAccent.withOpacity(0.05),
-                                        shape: BoxShape.circle,
-                                        border: Border.all(color: Colors.amberAccent.withOpacity(0.15), width: 1.5),
-                                      ),
-                                      child: const Icon(
-                                        Icons.emoji_events_rounded,
-                                        color: Colors.amberAccent,
-                                        size: 48,
-                                      ),
-                                    ),
-                                    const SizedBox(height: 24),
-                                    const Text(
-                                      "No Winners Today",
-                                      style: TextStyle(
-                                        fontSize: 18,
-                                        fontWeight: FontWeight.bold,
-                                        color: Colors.white,
-                                      ),
-                                    ),
-                                    const SizedBox(height: 8),
-                                    const Text(
-                                      "Be the first to complete a puzzle today and claim your spot on the leaderboard!",
-                                      textAlign: TextAlign.center,
-                                      style: TextStyle(color: Colors.white54, fontSize: 13),
-                                    ),
-                                  ],
-                                ),
+                      return StreamBuilder<QuerySnapshot>(
+                        stream: _todaySolversStream,
+                        builder: (context, snapshot) {
+                          if (snapshot.hasError) {
+                            return Center(
+                              child: Text(
+                                "Error loading winners: ${snapshot.error}",
+                                style: const TextStyle(color: Colors.white54),
                               ),
-                            ),
-                          ],
-                        );
-                      }
-
-                      // Sort locally by timeTaken ascending (fastest solvers first)
-                      final sortedDocs = List<QueryDocumentSnapshot>.from(todayDocs);
-                      sortedDocs.sort((a, b) {
-                        final dataA = a.data() as Map<String, dynamic>;
-                        final dataB = b.data() as Map<String, dynamic>;
-                        final timeA = dataA['timeTaken'] != null ? (dataA['timeTaken'] as num).toInt() : 0;
-                        final timeB = dataB['timeTaken'] != null ? (dataB['timeTaken'] as num).toInt() : 0;
-                        return timeA.compareTo(timeB);
-                      });
-
-                      return ListView.builder(
-                        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
-                        itemCount: sortedDocs.length + (hasHeader ? 1 : 0),
-                        itemBuilder: (context, index) {
-                          if (hasHeader && index == 0) {
-                            return _buildWinnersHeader(winnersText, winnersLink);
+                            );
                           }
 
-                          final actualIndex = hasHeader ? index - 1 : index;
-                          final data = sortedDocs[actualIndex].data() as Map<String, dynamic>;
-                          final rawName = data['userName'] as String? ?? 'Guest Player';
-                          final firstName = rawName.trim().split(' ').first;
-                          final userPhoto = data['userPhoto'] as String? ?? '';
-                          final timeTaken = data['timeTaken'] != null ? (data['timeTaken'] as num).toInt() : 0;
-                          final puzzleId = data['puzzleId'] as String? ?? '';
-                          final solverImageUrl = data['imageUrl'] as String? ?? '';
-                          final puzzleTitle = data['puzzleTitle'] as String? ?? data['fileName'] as String? ?? 'Solved Puzzle';
-                          final puzzleImageUrl = solverImageUrl;
-                          final givenTimer = data['givenTimer'] != null ? (data['givenTimer'] as num).toInt() : null;
+                          if (snapshot.connectionState == ConnectionState.waiting) {
+                            return const Center(
+                              child: CircularProgressIndicator(
+                                valueColor: AlwaysStoppedAnimation<Color>(Colors.cyanAccent),
+                              ),
+                            );
+                          }
+
+                          final solversDocs = snapshot.data?.docs ?? [];
+                          final now = DateTime.now();
+                          final validSolvers = <QueryDocumentSnapshot>[];
+
+                          for (var solverDoc in solversDocs) {
+                            final solverData = solverDoc.data() as Map<String, dynamic>;
+                            final puzzleId = solverData['puzzleId'] as String? ?? '';
+
+                            // 1. Check if the puzzle exists in our active list
+                            if (puzzleId.isNotEmpty && puzzleMap.containsKey(puzzleId)) {
+                              final puzzleData = puzzleMap[puzzleId]!;
+                              final uploadedAt = (puzzleData['uploadedAt'] as Timestamp?)?.toDate();
+
+                              if (uploadedAt != null) {
+                                final difference = now.difference(uploadedAt);
+                                // 2. Check if puzzle is less than 24 hours old
+                                if (difference.inHours < 24 && difference.inHours >= 0) {
+                                  validSolvers.add(solverDoc);
+                                  continue;
+                                }
+                              }
+                            }
+
+                            // If puzzle was deleted or solver is older than 24 hours, delete from Firestore
+                            FirebaseFirestore.instance
+                                .collection('puzzle_solvers')
+                                .doc(solverDoc.id)
+                                .delete()
+                                .catchError((e) => debugPrint('Error deleting expired solver: $e'));
+                          }
+
+                          if (validSolvers.isEmpty) {
+                            return ListView(
+                              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+                              children: [
+                                if (hasHeader) _buildWinnersHeader(winnersText, winnersLink),
+                                const SizedBox(height: 40),
+                                Center(
+                                  child: Padding(
+                                    padding: const EdgeInsets.all(24.0),
+                                    child: Column(
+                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      children: [
+                                        Container(
+                                          padding: const EdgeInsets.all(20),
+                                          decoration: BoxDecoration(
+                                            color: Colors.amberAccent.withOpacity(0.05),
+                                            shape: BoxShape.circle,
+                                            border: Border.all(color: Colors.amberAccent.withOpacity(0.15), width: 1.5),
+                                          ),
+                                          child: const Icon(
+                                            Icons.emoji_events_rounded,
+                                            color: Colors.amberAccent,
+                                            size: 48,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 24),
+                                        const Text(
+                                          "No Winners Today",
+                                          style: TextStyle(
+                                            fontSize: 18,
+                                            fontWeight: FontWeight.bold,
+                                            color: Colors.white,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 8),
+                                        const Text(
+                                          "Be the first to complete a puzzle today and claim your spot on the leaderboard!",
+                                          textAlign: TextAlign.center,
+                                          style: TextStyle(color: Colors.white54, fontSize: 13),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            );
+                          }
+
+                          // Sort locally by timeTaken ascending (fastest solvers first)
+                          final sortedDocs = List<QueryDocumentSnapshot>.from(validSolvers);
+                          sortedDocs.sort((a, b) {
+                            final dataA = a.data() as Map<String, dynamic>;
+                            final dataB = b.data() as Map<String, dynamic>;
+                            final timeA = dataA['timeTaken'] != null ? (dataA['timeTaken'] as num).toInt() : 0;
+                            final timeB = dataB['timeTaken'] != null ? (dataB['timeTaken'] as num).toInt() : 0;
+                            return timeA.compareTo(timeB);
+                          });
+
+                          return ListView.builder(
+                            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+                            itemCount: sortedDocs.length + (hasHeader ? 1 : 0),
+                            itemBuilder: (context, index) {
+                              if (hasHeader && index == 0) {
+                                return _buildWinnersHeader(winnersText, winnersLink);
+                              }
+
+                              final actualIndex = hasHeader ? index - 1 : index;
+                              final data = sortedDocs[actualIndex].data() as Map<String, dynamic>;
+                              final rawName = data['userName'] as String? ?? 'Guest Player';
+                              final firstName = rawName.trim().split(' ').first;
+                              final userPhoto = data['userPhoto'] as String? ?? '';
+                              final timeTaken = data['timeTaken'] != null ? (data['timeTaken'] as num).toInt() : 0;
+                              final puzzleId = data['puzzleId'] as String? ?? '';
+                              final solverImageUrl = data['imageUrl'] as String? ?? '';
+                              final puzzleTitle = data['puzzleTitle'] as String? ?? data['fileName'] as String? ?? 'Solved Puzzle';
+                              final puzzleImageUrl = solverImageUrl;
+                              final givenTimer = data['givenTimer'] != null ? (data['givenTimer'] as num).toInt() : null;
 
                           final mins = timeTaken ~/ 60;
                           final secs = timeTaken % 60;
@@ -2873,7 +2936,9 @@ class _HomeScreenState extends State<HomeScreen> {
                     },
                   );
                 },
-              ),
+              );
+            },
+          ),
             ),
           ],
         ),
@@ -3557,6 +3622,10 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
     var currentStep = 0;
 
     _progressTimer = Timer.periodic(stepDuration, (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
       currentStep++;
       setState(() {
         _progressValue = (currentStep / steps).clamp(0.0, 1.0);
@@ -3964,7 +4033,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
                     // Slogan
                     Text(
-                      'Sharp your mind',
+                      'Sharpen your mind',
                       textAlign: TextAlign.center,
                       style: TextStyle(
                         fontSize: 14,
@@ -4234,7 +4303,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
                 const Spacer(),
                 Text(
-                  'Top Puzzle v1.0.0',
+                  'Top Puzzle v3.0.2',
                   textAlign: TextAlign.center,
                   style: TextStyle(
                     fontSize: 12,
@@ -4773,12 +4842,11 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                               'mobile': newMobile,
                             }, SetOptions(merge: true));
 
+                            if (!mounted) return;
                             if (widget.showSkip) {
                               _navigateToHome();
                             } else {
-                              if (mounted) {
-                                navigator.pop(newMobile);
-                              }
+                              navigator.pop(newMobile);
                             }
                             messenger.showSnackBar(
                               const SnackBar(
